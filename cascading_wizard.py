@@ -1,5 +1,8 @@
 import sys
+import os
+from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QPushButton, QLineEdit, QFileDialog
+from PyQt6.QtCore import QProcess
 
 
 class WizardManager(QWidget):
@@ -82,17 +85,77 @@ class WizardManager(QWidget):
 
         self.setLayout(main_layout)
 
-        # 数据 - 确保级联关系
-        self.data = {
-            "pmsm": {
-                "f280049c": ["ctrl_settings.h"]
-            },
-        }
+        # 数据 - 存储exe文件路径信息
+        self.exe_data = {}
 
-        # 填充左侧列表
-        for category in self.data.keys():
-            item = QListWidgetItem(category)
-            self.left_list.addItem(item)
+        # 自动扫描tools目录
+        self.scan_tools_directory()
+
+    def scan_tools_directory(self):
+        # 获取exe文件所在目录
+        if getattr(sys, 'frozen', False):
+            # 如果是打包后的exe文件
+            app_dir = os.path.dirname(sys.executable)
+        else:
+            # 如果是直接运行Python脚本
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        tools_dir = os.path.join(app_dir, 'tools')
+        
+        # 初始化数据
+        self.data = {}
+        
+        # 检查tools目录是否存在
+        if not os.path.exists(tools_dir):
+            self.status_label.setText(f"tools目录不存在: {tools_dir}")
+            return
+        
+        # 遍历tools目录下的所有.exe文件
+        for root, dirs, files in os.walk(tools_dir):
+            for file in files:
+                if file.endswith('.exe'):
+                    # 获取文件的完整路径
+                    exe_path = os.path.join(root, file)
+                    # 计算相对于tools目录的路径
+                    rel_path = os.path.relpath(exe_path, tools_dir)
+                    # 分割路径获取各级目录
+                    parts = rel_path.split(os.sep)
+                    
+                    # 解析路径：第一级/第二级/第三级.exe
+                    if len(parts) >= 3:
+                        first_dir = parts[0]
+                        second_dir = parts[1]
+                        third_dir = parts[2]
+                        
+                        # 移除.exe后缀作为显示名称
+                        option_name = os.path.splitext(third_dir)[0]
+                        
+                        # 构建数据结构
+                        if first_dir not in self.data:
+                            self.data[first_dir] = {}
+                        if second_dir not in self.data[first_dir]:
+                            self.data[first_dir][second_dir] = []
+                        
+                        # 存储exe路径信息
+                        if option_name not in self.data[first_dir][second_dir]:
+                            self.data[first_dir][second_dir].append(option_name)
+                        
+                        # 存储完整的exe路径
+                        if first_dir not in self.exe_data:
+                            self.exe_data[first_dir] = {}
+                        if second_dir not in self.exe_data[first_dir]:
+                            self.exe_data[first_dir][second_dir] = {}
+                        self.exe_data[first_dir][second_dir][option_name] = exe_path
+        
+        if not self.data:
+            self.status_label.setText("未找到任何Wizard程序")
+        else:
+            self.status_label.setText(f"已加载 {len(self.data)} 个Wizard类别")
+            
+            # 填充左侧列表
+            for category in self.data.keys():
+                item = QListWidgetItem(category)
+                self.left_list.addItem(item)
 
         # 连接信号
         self.left_list.itemClicked.connect(self.on_left_item_clicked)
@@ -169,16 +232,28 @@ class WizardManager(QWidget):
     def on_run_wizard(self):
         # 运行选中的Wizard
         if self.selected_category and self.selected_subcategory and self.selected_option:
-            print(f"运行Wizard: {self.selected_category} > {self.selected_subcategory} > {self.selected_option}")
+            # 获取exe文件路径
+            exe_path = self.exe_data.get(self.selected_category, {}).get(self.selected_subcategory, {}).get(self.selected_option)
             
-            # 这里可以根据选择的不同，启动不同的Wizard
-            # 例如：
-            # if self.selected_category == "电机控制":
-            #     if self.selected_subcategory == "直流电机":
-            #         # 启动直流电机配置Wizard
-            #         pass
-            
-            self.status_label.setText(f"已运行: {self.selected_option}")
+            if exe_path and os.path.exists(exe_path):
+                # 获取目标文件夹
+                target_folder = self.folder_input.text()
+                
+                print(f"运行Wizard: {self.selected_category} > {self.selected_subcategory} > {self.selected_option}")
+                print(f"Exe路径: {exe_path}")
+                print(f"目标文件夹: {target_folder}")
+                
+                # 启动exe程序
+                if target_folder:
+                    # 带参数运行
+                    QProcess.startDetached(exe_path, [target_folder])
+                else:
+                    # 不带参数运行
+                    QProcess.startDetached(exe_path)
+                
+                self.status_label.setText(f"已运行: {self.selected_option}")
+            else:
+                self.status_label.setText(f"exe文件不存在: {exe_path}")
 
 
 def main():
