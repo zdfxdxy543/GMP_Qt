@@ -1,9 +1,65 @@
 import sys
 import os
+import random
+import json
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QPushButton, QLineEdit, QFileDialog
-from PyQt6.QtCore import QProcess, QUrl
+from PyQt6.QtCore import QProcess, QUrl, Qt, QPoint
+from PyQt6.QtGui import QPainter, QPen, QColor, QMovie
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+
+
+class HelpBubble(QWidget):
+    def __init__(self, message, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("background-color: transparent; border: none;")
+        
+        # 布局
+        layout = QVBoxLayout()
+        
+        # 标题栏（带关闭按钮）
+        title_bar = QHBoxLayout()
+        title_bar.setAlignment(Qt.AlignmentFlag.AlignRight)
+        
+        close_button = QPushButton("×")
+        close_button.setFixedSize(20, 20)
+        close_button.setStyleSheet("background-color: #D2B48C; border: 1px solid #8B4513; border-radius: 2px; color: black;")
+        close_button.clicked.connect(self.close)
+        
+        title_bar.addWidget(close_button)
+        layout.addLayout(title_bar)
+        
+        # 消息内容
+        self.message_label = QLabel(message)
+        self.message_label.setWordWrap(True)
+        self.message_label.setStyleSheet("padding: 8px; color: black;")
+        layout.addWidget(self.message_label)
+        
+        self.setLayout(layout)
+        self.adjustSize()
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # 绘制气泡形状
+        rect = self.rect()
+        bubble_rect = rect.adjusted(5, 5, -5, -5)
+        
+        # 绘制气泡主体（米黄色）
+        painter.setBrush(QColor(245, 245, 220))  # 米黄色 #F5F5DC
+        painter.setPen(QPen(Qt.GlobalColor.gray, 1))
+        painter.drawRoundedRect(bubble_rect, 10, 10)
+        
+        # 绘制气泡尾部
+        tail_points = [
+            QPoint(bubble_rect.left() + 20, bubble_rect.bottom()),
+            QPoint(bubble_rect.left() + 10, rect.bottom() - 5),
+            QPoint(bubble_rect.left() + 30, rect.bottom() - 5)
+        ]
+        painter.drawPolygon(tail_points)
 
 
 class WizardManager(QWidget):
@@ -14,6 +70,45 @@ class WizardManager(QWidget):
 
         # 主布局
         main_layout = QVBoxLayout()
+
+        # 顶部按钮布局
+        top_layout = QHBoxLayout()
+        top_layout.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        # 静音按钮
+        self.mute_button = QPushButton()
+        self.mute_button.setFixedSize(30, 30)
+        self.mute_button.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc; border-radius: 0;")
+        self.mute_button.setText("🔊")
+        self.mute_button.clicked.connect(self.toggle_mute)
+
+        # Chatbot按钮
+        self.chatbot_button = QPushButton()
+        self.chatbot_button.setFixedSize(30, 30)
+        self.chatbot_button.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc; border-radius: 0;")
+        
+        # 设置chatbot按钮图标
+        if getattr(sys, 'frozen', False):
+            app_dir = os.path.dirname(sys.executable)
+        else:
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+        chatbot_icon_path = os.path.join(app_dir, 'resources', 'chatbot_animation.gif')
+        if os.path.exists(chatbot_icon_path):
+            # 使用QMovie播放GIF动画
+            self.chatbot_movie = QMovie(chatbot_icon_path)
+            self.chatbot_movie.setScaledSize(self.chatbot_button.size())
+            # 创建一个QLabel来显示动画
+            self.chatbot_label = QLabel(self.chatbot_button)
+            self.chatbot_label.setGeometry(0, 0, 30, 30)
+            self.chatbot_label.setMovie(self.chatbot_movie)
+            self.chatbot_movie.start()
+        else:
+            self.chatbot_button.setText("🤖")
+        self.chatbot_button.clicked.connect(self.show_random_help)
+
+        top_layout.addWidget(self.chatbot_button)
+        top_layout.addWidget(self.mute_button)
+        main_layout.addLayout(top_layout)
 
         # 标题
         title_label = QLabel("Wizard管理工具")
@@ -84,10 +179,7 @@ class WizardManager(QWidget):
         self.status_label = QLabel("请选择要运行的Wizard")
         main_layout.addWidget(self.status_label)
 
-        # 静音按钮
-        self.mute_button = QPushButton("静音")
-        self.mute_button.clicked.connect(self.toggle_mute)
-        main_layout.addWidget(self.mute_button)
+
 
         self.setLayout(main_layout)
 
@@ -114,7 +206,7 @@ class WizardManager(QWidget):
             # 如果是直接运行Python脚本
             app_dir = os.path.dirname(os.path.abspath(__file__))
         
-        music_path = os.path.join(app_dir, 'Starfall_Odyssey.mp3')
+        music_path = os.path.join(app_dir, 'resources', 'Starfall_Odyssey.mp3')
         
         if os.path.exists(music_path):
             self.player.setSource(QUrl.fromLocalFile(music_path))
@@ -129,10 +221,39 @@ class WizardManager(QWidget):
         # 切换静音状态
         if self.audio_output.isMuted():
             self.audio_output.setMuted(False)
-            self.mute_button.setText("静音")
+            self.mute_button.setText("🔊")
         else:
             self.audio_output.setMuted(True)
-            self.mute_button.setText("取消静音")
+            self.mute_button.setText("🔇")
+
+    def show_random_help(self):
+        # 从help.json文件中读取随机消息并显示
+        if getattr(sys, 'frozen', False):
+            app_dir = os.path.dirname(sys.executable)
+        else:
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+        help_file_path = os.path.join(app_dir, 'help.json')
+        
+        message = ""
+        if os.path.exists(help_file_path):
+            try:
+                with open(help_file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if 'help' in data and isinstance(data['help'], list) and data['help']:
+                    message = random.choice(data['help'])
+                else:
+                    message = "没有找到帮助信息"
+            except Exception as e:
+                message = f"读取帮助文件失败: {str(e)}"
+        else:
+            message = "help.json文件不存在"
+        
+        # 创建并显示气泡窗口
+        pos = self.chatbot_button.mapToGlobal(self.chatbot_button.rect().topLeft())
+        bubble = HelpBubble(message, self)
+        # 调整位置，使其在chatbot按钮的下方
+        bubble.move(pos.x(), pos.y() + self.chatbot_button.height() + 5)
+        bubble.show()
 
     def scan_tools_directory(self):
         # 获取exe文件所在目录

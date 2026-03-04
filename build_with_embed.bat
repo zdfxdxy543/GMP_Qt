@@ -10,6 +10,15 @@ set "VIRTUALENV_PYZ=%ROOT%\virtualenv.pyz"
 set "VENV_DIR=%ROOT%\.venv_embed"
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 set "SPECS_DIR=%ROOT%\build\specs"
+set "SRC_DIR=%ROOT%\src"
+set "RES_DIR=%ROOT%\resources"
+set "ENTRY_PY=%ROOT%\cascading_wizard.py"
+set "MUSIC_FILE=%RES_DIR%\Starfall_Odyssey.mp3"
+set "ICON_FILE=%RES_DIR%\main.ico"
+
+if not exist "%ENTRY_PY%" if exist "%SRC_DIR%\cascading_wizard.py" set "ENTRY_PY=%SRC_DIR%\cascading_wizard.py"
+if not exist "%MUSIC_FILE%" if exist "%ROOT%\Starfall_Odyssey.mp3" set "MUSIC_FILE=%ROOT%\Starfall_Odyssey.mp3"
+if not exist "%ICON_FILE%" if exist "%ROOT%\main.ico" set "ICON_FILE=%ROOT%\main.ico"
 
 if not exist "%EMBED_PY%" (
     echo [ERROR] python-embed\python.exe not found.
@@ -21,8 +30,8 @@ if not exist "%VIRTUALENV_PYZ%" (
     exit /b 1
 )
 
-if not exist "%ROOT%\cascading_wizard.py" (
-    echo [ERROR] cascading_wizard.py not found in project root.
+if not exist "%ENTRY_PY%" (
+    echo [ERROR] cascading_wizard.py not found in src or project root.
     exit /b 1
 )
 
@@ -64,42 +73,55 @@ if not exist "%VENV_PY%" (
 )
 
 echo [2/5] Installing dependencies...
-"%VENV_PY%" -m pip install --upgrade pip
+"%VENV_PY%" -m pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
 if errorlevel 1 goto :error
 
 if exist "%ROOT%\requirements.txt" (
-    "%VENV_PY%" -m pip install -r "%ROOT%\requirements.txt"
+    "%VENV_PY%" -m pip install -r "%ROOT%\requirements.txt" -i https://pypi.tuna.tsinghua.edu.cn/simple
     if errorlevel 1 goto :error
 ) else (
     echo [WARN] requirements.txt not found, skipping.
 )
 
-"%VENV_PY%" -m pip install pyinstaller
+"%VENV_PY%" -m pip install pyinstaller -i https://pypi.tuna.tsinghua.edu.cn/simple
 if errorlevel 1 goto :error
 
-echo [3/5] Building root script: cascading_wizard.py...
+echo [3/5] Building app script: %ENTRY_PY% ...
 if exist "%SPECS_DIR%\cascading_wizard.spec" del /f /q "%SPECS_DIR%\cascading_wizard.spec"
 
 set "ADD_DATA_ARGS="
-if exist "%ROOT%\Starfall_Odyssey.mp3" (
-    set "ADD_DATA_ARGS=--add-data "%ROOT%\Starfall_Odyssey.mp3;.""
+if exist "%MUSIC_FILE%" (
+    set "ADD_DATA_ARGS=--add-data "%MUSIC_FILE%;.""
     echo [INFO] Music file Starfall_Odyssey.mp3 found, will be embedded.
 ) else (
-    echo [WARN] Starfall_Odyssey.mp3 not found in project root, building without music.
+    echo [WARN] Starfall_Odyssey.mp3 not found in resources or project root, building without music.
 )
 
-if exist "%ROOT%\main.ico" (
+:: 添加chatbot_animation.gif
+set "CHATBOT_GIF=%RES_DIR%\chatbot_animation.gif"
+if exist "%CHATBOT_GIF%" (
     if defined ADD_DATA_ARGS (
-        "%VENV_PY%" -m PyInstaller --noconfirm --onefile --icon "%ROOT%\main.ico" %ADD_DATA_ARGS% --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ROOT%\cascading_wizard.py"
+        set "ADD_DATA_ARGS=%ADD_DATA_ARGS% --add-data "%CHATBOT_GIF%;.""
     ) else (
-        "%VENV_PY%" -m PyInstaller --noconfirm --onefile --icon "%ROOT%\main.ico" --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ROOT%\cascading_wizard.py"
+        set "ADD_DATA_ARGS=--add-data "%CHATBOT_GIF%;.""
+    )
+    echo [INFO] Chatbot animation chatbot_animation.gif found, will be embedded.
+) else (
+    echo [WARN] chatbot_animation.gif not found in resources, building without chatbot animation.
+)
+
+if exist "%ICON_FILE%" (
+    if defined ADD_DATA_ARGS (
+        "%VENV_PY%" -m PyInstaller --noconfirm --onefile --icon "%ICON_FILE%" %ADD_DATA_ARGS% --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ENTRY_PY%"
+    ) else (
+        "%VENV_PY%" -m PyInstaller --noconfirm --onefile --icon "%ICON_FILE%" --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ENTRY_PY%"
     )
 ) else (
-    echo [WARN] main.ico not found in project root, building without icon.
+    echo [WARN] main.ico not found in resources or project root, building without icon.
     if defined ADD_DATA_ARGS (
-        "%VENV_PY%" -m PyInstaller --noconfirm --onefile %ADD_DATA_ARGS% --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ROOT%\cascading_wizard.py"
+        "%VENV_PY%" -m PyInstaller --noconfirm --onefile %ADD_DATA_ARGS% --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ENTRY_PY%"
     ) else (
-        "%VENV_PY%" -m PyInstaller --noconfirm --onefile --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ROOT%\cascading_wizard.py"
+        "%VENV_PY%" -m PyInstaller --noconfirm --onefile --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ENTRY_PY%"
     )
 )
 if errorlevel 1 goto :error

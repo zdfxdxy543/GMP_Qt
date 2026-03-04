@@ -36,3 +36,7 @@ Thumbs.db
 
 # 日志文件
 *.log
+
+# 确保python-embed文件夹不被过滤
+!python-embed/
+!python-embed/**/*
