@@ -1,0 +1,120 @@
+import sys
+from PyQt6.QtWidgets import QApplication, QWizard, QWizardPage, QVBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QCheckBox, QDialog, QRadioButton, QButtonGroup
+from PyQt6.QtGui import QFont
+
+class TargetFolderPage(QWizardPage):
+    def __init__(self):
+        super().__init__()
+        self.setTitle("步骤0：设置目标文件夹")
+
+        # 初始化页面布局
+        layout = QVBoxLayout()
+
+        # 目标文件夹标签
+        folder_label = QLabel("目标文件夹:")
+        layout.addWidget(folder_label)
+
+        # 文件夹路径输入框和浏览按钮
+        folder_layout = QVBoxLayout()
+        self.folder_input = QLineEdit()
+        self.folder_input.setPlaceholderText("请选择目标文件夹")
+        browse_button = QPushButton("浏览...")
+        browse_button.clicked.connect(self.browse_folder)
+        
+        folder_layout.addWidget(self.folder_input)
+        folder_layout.addWidget(browse_button)
+        layout.addLayout(folder_layout)
+
+        self.setLayout(layout)
+
+    def browse_folder(self):
+        # 打开文件对话框选择目标文件夹
+        folder = QFileDialog.getExistingDirectory(self, "选择目标文件夹")
+        if folder:
+            self.folder_input.setText(folder)
+
+    def validatePage(self):
+        return bool(self.folder_input.text())
+    
+    def get_data(self):
+        # 返回选中的目标文件夹
+        return self.folder_input.text()
+
+class ConfigWizard(QWizard):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("配置向导")
+        self.setWizardStyle(QWizard.WizardStyle.ClassicStyle)
+
+        self.addPage(TargetFolderPage())
+
+        self.finished.connect(self.on_finished)
+
+    def on_finished(self, result):
+        # 只有当用户点击Finish按钮时才生成头文件
+        if result == QDialog.DialogCode.Accepted:
+            targetFolder = self.page(0).get_data()
+
+            # 生成头文件内容
+            self.generate_ctrl_settings_header(targetFolder)
+
+    def _add_float_suffix(self, value):
+        """为小数添加f后缀"""
+        try:
+            # 尝试转换为浮点数
+            float_val = float(value)
+            # 如果是小数，添加f后缀
+            if '.' in str(value):
+                return f"{value}f"
+            return value
+        except ValueError:
+            return value
+
+    def generate_ctrl_settings_header(self, targetFolder):
+        """生成ctrl_settings.h头文件"""
+        import os
+        header_content = "// GMP core config module\n"
+        header_content += "#include <gmp_core.h>\n\n"
+        header_content += "#include \"user_main.h\"\n"
+        header_content += "#include <xplt.peripheral.h>\n\n"
+
+        header_content += "//=================================================================================================\n// definitions of peripheral\n\n\n"
+        header_content += "//=================================================================================================\n// peripheral setup function\n\n"
+        header_content += "// User should setup all the peripheral in this function.\nvoid setup_peripheral(void)\n{\n\n}\n\n"
+        header_content += "//=================================================================================================\n// ADC Interrupt ISR and controller related function\n\n"
+        header_content += "// ADC interrupt\ninterrupt void MainISR(void)\n{\n\n}\n"
+        header_content += "//=================================================================================================\n// communication functions and interrupt functions here\n\n"
+
+        # 填充内容到模板（如果有的话），这里直接使用生成的内容
+        filled_content = header_content
+
+        # 确保目标文件夹存在
+        os.makedirs(targetFolder, exist_ok=True)
+        
+        # 写入文件到目标文件夹
+        file_path = os.path.join(targetFolder, "xplt.peripheral.c")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(filled_content)
+
+        print(f"xplt.peripheral.c头文件已生成到: {file_path}")
+
+def main():
+    app = QApplication(sys.argv)
+
+    wizard = ConfigWizard()
+    
+    # 检查是否有命令行参数
+    if len(sys.argv) > 1:
+        # 如果有参数，将第一个参数作为目标文件夹
+        target_folder = sys.argv[1]
+        # 设置目标文件夹到第一个页面
+        target_page = wizard.page(0)
+        if hasattr(target_page, 'folder_input'):
+            target_page.folder_input.setText(target_folder)
+    
+    wizard.show()
+
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()
