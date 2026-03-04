@@ -80,11 +80,27 @@ if errorlevel 1 goto :error
 echo [3/5] Building root script: cascading_wizard.py...
 if exist "%SPECS_DIR%\cascading_wizard.spec" del /f /q "%SPECS_DIR%\cascading_wizard.spec"
 
+set "ADD_DATA_ARGS="
+if exist "%ROOT%\Starfall_Odyssey.mp3" (
+    set "ADD_DATA_ARGS=--add-data "%ROOT%\Starfall_Odyssey.mp3;.""
+    echo [INFO] Music file Starfall_Odyssey.mp3 found, will be embedded.
+) else (
+    echo [WARN] Starfall_Odyssey.mp3 not found in project root, building without music.
+)
+
 if exist "%ROOT%\main.ico" (
-    "%VENV_PY%" -m PyInstaller --noconfirm --onefile --icon "%ROOT%\main.ico" --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ROOT%\cascading_wizard.py"
+    if defined ADD_DATA_ARGS (
+        "%VENV_PY%" -m PyInstaller --noconfirm --onefile --icon "%ROOT%\main.ico" %ADD_DATA_ARGS% --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ROOT%\cascading_wizard.py"
+    ) else (
+        "%VENV_PY%" -m PyInstaller --noconfirm --onefile --icon "%ROOT%\main.ico" --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ROOT%\cascading_wizard.py"
+    )
 ) else (
     echo [WARN] main.ico not found in project root, building without icon.
-    "%VENV_PY%" -m PyInstaller --noconfirm --onefile --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ROOT%\cascading_wizard.py"
+    if defined ADD_DATA_ARGS (
+        "%VENV_PY%" -m PyInstaller --noconfirm --onefile %ADD_DATA_ARGS% --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ROOT%\cascading_wizard.py"
+    ) else (
+        "%VENV_PY%" -m PyInstaller --noconfirm --onefile --distpath "%ROOT%" --workpath "%ROOT%\build\pyinstaller\root" --specpath "%SPECS_DIR%" "%ROOT%\cascading_wizard.py"
+    )
 )
 if errorlevel 1 goto :error
 

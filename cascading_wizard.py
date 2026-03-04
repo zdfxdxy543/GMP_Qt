@@ -2,7 +2,8 @@ import sys
 import os
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QPushButton, QLineEdit, QFileDialog
-from PyQt6.QtCore import QProcess
+from PyQt6.QtCore import QProcess, QUrl
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 
 class WizardManager(QWidget):
@@ -83,13 +84,55 @@ class WizardManager(QWidget):
         self.status_label = QLabel("请选择要运行的Wizard")
         main_layout.addWidget(self.status_label)
 
+        # 静音按钮
+        self.mute_button = QPushButton("静音")
+        self.mute_button.clicked.connect(self.toggle_mute)
+        main_layout.addWidget(self.mute_button)
+
         self.setLayout(main_layout)
+
+        # 初始化音乐播放器
+        self.setup_audio_player()
 
         # 数据 - 存储exe文件路径信息
         self.exe_data = {}
 
         # 自动扫描tools目录
         self.scan_tools_directory()
+
+    def setup_audio_player(self):
+        # 初始化音乐播放器
+        self.player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.player.setAudioOutput(self.audio_output)
+        
+        # 获取音乐文件路径
+        if getattr(sys, 'frozen', False):
+            # 如果是打包后的exe文件
+            app_dir = os.path.dirname(sys.executable)
+        else:
+            # 如果是直接运行Python脚本
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        music_path = os.path.join(app_dir, 'Starfall_Odyssey.mp3')
+        
+        if os.path.exists(music_path):
+            self.player.setSource(QUrl.fromLocalFile(music_path))
+            # 设置循环播放
+            self.player.setLoops(-1)  # -1表示无限循环
+            # 开始播放
+            self.player.play()
+        else:
+            print(f"音乐文件不存在: {music_path}")
+    
+    def toggle_mute(self):
+        # 切换静音状态
+        if self.audio_output.isMuted():
+            self.audio_output.setMuted(False)
+            self.mute_button.setText("静音")
+        else:
+            self.audio_output.setMuted(True)
+            self.mute_button.setText("取消静音")
 
     def scan_tools_directory(self):
         # 获取exe文件所在目录
