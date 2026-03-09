@@ -1,0 +1,78 @@
+{
+  "blocks": [
+    {
+      "id": "blk_speed_pi",
+      "name": "速度 PI 控制",
+      "library": "控制算法库",
+      "language": "c",
+      "steps": ["ctrl_settings", "ctrl.config", "ctrl.c"],
+      "insert_target": {
+        "file": "ctrl.c",
+        "anchor": "// <AUTO_BLOCKS>"
+      },
+      "definition_target": {
+        "file": "ctrl_settings.h",
+        "anchor": "// <AUTO_DEFINITIONS>"
+      },
+      "variables": [
+        {
+          "name": "g_speed_kp",
+          "definition": "float g_speed_kp = 0.10f;"
+        },
+        {
+          "name": "g_speed_ki",
+          "definition": "float g_speed_ki = 0.01f;"
+        },
+        {
+          "name": "g_speed_integral",
+          "definition": "float g_speed_integral = 0.0f;"
+        }
+      ],
+      "code_template": "// --- 速度 PI 控制程序块 ---\nfloat speed_err = speed_ref - speed_feedback;\ng_speed_integral += speed_err;\nfloat speed_out = g_speed_kp * speed_err + g_speed_ki * g_speed_integral;\n"
+    },
+    {
+      "id": "blk_current_limit",
+      "name": "电流限幅",
+      "library": "控制算法库",
+      "language": "c",
+      "steps": ["xplt.interface", "ctrl.c"],
+      "insert_target": {
+        "file": "ctrl.c",
+        "anchor": "// <AUTO_BLOCKS>"
+      },
+      "definition_target": {
+        "file": "ctrl_settings.h",
+        "anchor": "// <AUTO_DEFINITIONS>"
+      },
+      "variables": [
+        {
+          "name": "g_current_limit",
+          "definition": "float g_current_limit = 18.0f;"
+        }
+      ],
+      "code_template": "// --- 电流限幅程序块 ---\nif (iq_ref > g_current_limit) {\n    iq_ref = g_current_limit;\n} else if (iq_ref < -g_current_limit) {\n    iq_ref = -g_current_limit;\n}\n"
+    },
+    {
+      "id": "blk_log_python",
+      "name": "Python 调试日志",
+      "library": "仿真与调试库",
+      "language": "python",
+      "steps": ["simulink_buffer"],
+      "insert_target": {
+        "file": "debug_blocks.py",
+        "anchor": "# <AUTO_BLOCKS>"
+      },
+      "definition_target": {
+        "file": "debug_blocks.py",
+        "anchor": "# <AUTO_DEFINITIONS>"
+      },
+      "variables": [
+        {
+          "name": "debug_enabled",
+          "definition": "debug_enabled = True"
+        }
+      ],
+      "code_template": "# --- Python 调试日志程序块 ---\nif debug_enabled:\n    print(f\"speed_ref={speed_ref}, speed_feedback={speed_feedback}\")\n"
+    }
+  ]
+}

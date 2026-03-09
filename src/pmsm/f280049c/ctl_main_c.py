@@ -75,17 +75,16 @@ class ConfigWizard(QWizard):
         import os
         header_content = "// GMP core config module\n"
         header_content += "#include <gmp_core.h>\n\n"
-        header_content += "#include \"user_main.h\"\n"
+        header_content += "#include <ctrl_settings.h>\n\n"
+        header_content += "#include \"ctl_main.h\"\n"
         header_content += "#include <xplt.peripheral.h>\n\n"
-        header_content += "#include <ctl/component/dsa/dsa_trigger.h>\n\n"
-        header_content += "//BEGINDECLARATION\n\n"
-        header_content += "//ENDDECLARATION\n\n"
-        header_content += "//=================================================================================================\n// definitions of peripheral\n\n\n"
-        header_content += "//=================================================================================================\n// peripheral setup function\n\n"
-        header_content += "// User should setup all the peripheral in this function.\nvoid setup_peripheral(void)\n{\n\n}\n\n"
-        header_content += "//=================================================================================================\n// ADC Interrupt ISR and controller related function\n\n"
-        header_content += "// ADC interrupt\ninterrupt void MainISR(void)\n{\n\n}\n"
-        header_content += "//=================================================================================================\n// communication functions and interrupt functions here\n\n"
+        header_content += "#include <core/pm/function_scheduler.h>\n\n"
+
+        header_content += "//=================================================================================================\n// global controller variables\n\n\n"
+        header_content += "//=================================================================================================\n// CTL initialize routine\n\n"
+        header_content += "void ctl_init()\n{\n\n}\n\n"
+        header_content += "//=================================================================================================\n// CTL endless loop routine\n\n"
+        header_content += "void ctl_mainloop(void)\n{\n\n}\n"
 
         # 填充内容到模板（如果有的话），这里直接使用生成的内容
         filled_content = header_content
@@ -94,12 +93,11 @@ class ConfigWizard(QWizard):
         os.makedirs(targetFolder, exist_ok=True)
         
         # 写入文件到目标文件夹
-        file_path = os.path.join(targetFolder, "xplt.peripheral.c")
+        file_path = os.path.join(targetFolder, "ctl_main.c")
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(filled_content)
 
-        print(f"xplt.peripheral.c头文件已生成到: {file_path}")
-
+        print(f"ctl_main.c头文件已生成到: {file_path}")
 def main():
     app = QApplication(sys.argv)
 

@@ -77,6 +77,8 @@ class ConfigWizard(QWizard):
         header_content += "#include <xplt.peripheral.h>\n\n"
         header_content += "#ifndef _FILE_CTL_INTERFACE_H_\n#define _FILE_CTL_INTERFACE_H_\n\n"
         header_content += '#ifdef __cplusplus\nextern "C"\n{\n#endif // __cplusplus\n\n'
+        header_content += "//BEGINDECLARATION\n\n"
+        header_content += "//ENDDECLARATION\n\n"
         header_content += "// Controller interface\n"
         header_content += "// Input Callbacks\n"
         header_content += "GMP_STATIC_INLINE void ctl_input_callback(void)\n{\n\n}\n\n"

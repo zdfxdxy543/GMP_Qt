@@ -79,7 +79,8 @@ class ConfigWizard(QWizard):
         header_content += "#include <gmp_core.h>\n\n"
         header_content += "// controller settings\n#include \"ctrl_settings.h\"\n\n"
         header_content += "// select ADC PTR interface\n#include <ctl/component/interface/adc_ptr_channel.h>\n\n"
-
+        header_content += "//BEGINDECLARATION\n\n"
+        header_content += "//ENDDECLARATION\n\n"
         header_content += "//=================================================================================================\n// definitions of peripheral\n\n\n"
         header_content += "#ifdef __cplusplus\n}\n#endif // __cplusplus\n\n"
         header_content += "#endif // _FILE_PERIPHERAL_H_\n"

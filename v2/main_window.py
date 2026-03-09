@@ -11,9 +11,13 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
+    QLineEdit,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMenu,
+    QPlainTextEdit,
     QPushButton,
     QStyle,
     QWizard,
@@ -27,6 +31,7 @@ from PyQt6.QtWidgets import (
 
 from dialogs.new_file_dialog import NewFileDialog
 from widgets.code_editor import CodeEditor
+from widgets.block_library_manager import BlockLibraryManager
 from widgets.source_ui_loader import create_visual_widget_from_py
 from widgets.timeline_widget import TimelineWidget
 
@@ -46,6 +51,7 @@ class MainWindow(QMainWindow):
         self.top_stack = None
         self.bottom_stack = None
         self.top_page_meta = {}
+        self.bottom_page_meta = {}
         self.editor_language_combo = None
 
         self.current_controller = ""
@@ -55,6 +61,11 @@ class MainWindow(QMainWindow):
         self.current_theme = "light"
         self.middle_splitter = None
         self.horizontal_splitter = None
+        self.block_library_manager = BlockLibraryManager(self._project_root() / "v2" / "block_library")
+        self.editor_insert_position = 0
+        self.editor_insert_line = 1
+        self.editor_insert_column = 1
+        self.global_position_label = None
 
         self.step_py_map = {
             "ctrl_settings": "ctrl_settings_setup.py",
@@ -68,7 +79,12 @@ class MainWindow(QMainWindow):
         self._setup_toolbar()
         self._setup_central_ui()
         self._apply_window_theme(self.current_theme)
+        self._setup_global_status_widgets()
         self.statusBar().showMessage("就绪")
+
+    def _setup_global_status_widgets(self):
+        self.global_position_label = QLabel("插入位置: 第 1 行, 第 1 列", self)
+        self.statusBar().addPermanentWidget(self.global_position_label)
 
     def _light_theme_stylesheet(self):
         return """
@@ -432,6 +448,21 @@ class MainWindow(QMainWindow):
             return
         self._set_editor_language(self.editor_language_combo.currentData())
 
+    def _on_editor_cursor_position_changed(self):
+        if self.file_content_edit is None:
+            return
+
+        cursor = self.file_content_edit.textCursor()
+        self.editor_insert_position = cursor.position()
+        self.editor_insert_line = cursor.blockNumber() + 1
+        self.editor_insert_column = cursor.positionInBlock() + 1
+        self._update_insert_position_labels()
+
+    def _update_insert_position_labels(self):
+        text = f"插入位置: 第 {self.editor_insert_line} 行, 第 {self.editor_insert_column} 列"
+        if self.global_position_label is not None:
+            self.global_position_label.setText(text)
+
     def save_current_file(self):
         if self.file_content_edit is None:
             return
@@ -449,6 +480,7 @@ class MainWindow(QMainWindow):
             return
 
         self.file_path_label.setText(f"路径: {file_path}")
+        self._apply_editor_language_by_path(file_path)
         self.statusBar().showMessage(f"已保存: {file_path.name}", 2000)
 
     def save_file_as(self):
@@ -458,6 +490,7 @@ class MainWindow(QMainWindow):
             return
 
         self.current_edit_file = Path(file_path)
+        self._apply_editor_language_by_path(self.current_edit_file)
         self.save_current_file()
 
     def _setup_central_ui(self):
@@ -554,6 +587,7 @@ class MainWindow(QMainWindow):
         self.file_content_edit = CodeEditor(self._project_root(), file_area)
         self.file_content_edit.setPlaceholderText("点击 文件工具 -> 读取文件 来加载内容")
         self._set_editor_language(self.editor_language_combo.currentData())
+        self.file_content_edit.cursorPositionChanged.connect(self._on_editor_cursor_position_changed)
 
         file_layout.addWidget(file_header)
         file_layout.addWidget(self.file_path_label)
@@ -572,6 +606,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self._reload_top_visual_pages()
         self._switch_middle_pages(self.timeline_widget.selected_index)
+        self._on_editor_cursor_position_changed()
 
     def _init_middle_top_pages(self):
         self.top_page_meta = {}
@@ -725,6 +760,7 @@ class MainWindow(QMainWindow):
         self._apply_timeline_status_from_outputs(existing)
         selected_step = self.timeline_widget.step_name(self.timeline_widget.selected_index)
         self._show_step_output_in_right_panel(selected_step, folder_path)
+        self._refresh_all_block_lists()
 
     def _wizard_target_folder(self, wizard: QWizard):
         first_page = wizard.page(0)
@@ -749,23 +785,276 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"步骤 {step_name} 已完成，已刷新输出", 2500)
 
     def _init_middle_bottom_pages(self):
+        self.bottom_page_meta = {}
+        libraries = self.block_library_manager.library_names()
         for index, step_name in enumerate(self.timeline_widget.step_names):
             page = QWidget(self.bottom_stack)
             page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(8, 8, 8, 8)
+            page_layout.setSpacing(8)
 
-            title = QLabel(f"下半区域 - {step_name}", page)
+            top_row = QWidget(page)
+            top_row_layout = QHBoxLayout(top_row)
+            top_row_layout.setContentsMargins(0, 0, 0, 0)
+            top_row_layout.setSpacing(8)
+
+            title = QLabel(f"预包装程序块 - {step_name}", top_row)
             title.setStyleSheet("font-weight: 600; font-size: 14px;")
-            detail = QLabel(
-                f"当前步骤序号: {index + 1}\n当前步骤键名: {step_name}\n这里可放置该步骤专属的下半区控件。",
-                page,
-            )
-            detail.setWordWrap(True)
 
-            page_layout.addWidget(title)
-            page_layout.addWidget(detail)
+            control_panel = QWidget(top_row)
+            control_layout = QVBoxLayout(control_panel)
+            control_layout.setContentsMargins(0, 0, 0, 0)
+            control_layout.setSpacing(6)
+
+            search_input = QLineEdit(control_panel)
+            search_input.setPlaceholderText("搜索程序块...")
+            search_input.setFixedWidth(260)
+
+            library_combo = QComboBox(control_panel)
+            library_combo.setFixedWidth(260)
+            library_combo.addItems(libraries)
+
+            control_layout.addWidget(search_input, 0, Qt.AlignmentFlag.AlignRight)
+            control_layout.addWidget(library_combo, 0, Qt.AlignmentFlag.AlignRight)
+
+            top_row_layout.addWidget(title)
+            top_row_layout.addStretch(1)
+            top_row_layout.addWidget(control_panel)
+
+            block_list = QListWidget(page)
+            block_list.setObjectName(f"blockList_{step_name}")
+
+            insert_button = QPushButton("插入所选程序块", page)
+            insert_button.setEnabled(False)
+
+            bottom_row = QWidget(page)
+            bottom_row_layout = QHBoxLayout(bottom_row)
+            bottom_row_layout.setContentsMargins(0, 0, 0, 0)
+            bottom_row_layout.setSpacing(8)
+
+            bottom_row_layout.addStretch(1)
+            bottom_row_layout.addWidget(insert_button)
+
+            page_layout.addWidget(top_row)
+            page_layout.addWidget(block_list, 1)
+            page_layout.addWidget(bottom_row)
             page_layout.addStretch(1)
 
+            self.bottom_page_meta[step_name] = {
+                "search_input": search_input,
+                "library_combo": library_combo,
+                "block_list": block_list,
+                "insert_button": insert_button,
+            }
+
+            search_input.textChanged.connect(lambda _, step=step_name: self._refresh_block_list_for_step(step))
+            library_combo.currentIndexChanged.connect(lambda _, step=step_name: self._refresh_block_list_for_step(step))
+            block_list.itemSelectionChanged.connect(lambda step=step_name: self._on_block_selection_changed(step))
+            insert_button.clicked.connect(lambda _, step=step_name: self._insert_selected_block(step))
+
+            self._refresh_block_list_for_step(step_name)
+
             self.bottom_stack.addWidget(page)
+
+    def _default_insert_target_file(self, step_name: str):
+        if not self.current_target_folder:
+            return None
+        file_name = self._output_file_name_by_step(step_name)
+        if not file_name:
+            return None
+        return Path(self.current_target_folder) / file_name
+
+    def _refresh_all_block_lists(self):
+        for step_name in self.bottom_page_meta.keys():
+            self._refresh_block_list_for_step(step_name)
+
+    def _refresh_block_list_for_step(self, step_name: str):
+        meta = self.bottom_page_meta.get(step_name)
+        if not meta:
+            return
+
+        search_input = meta["search_input"]
+        library_combo = meta["library_combo"]
+        block_list = meta["block_list"]
+
+        query = search_input.text().strip()
+        library_name = library_combo.currentText().strip()
+        blocks = self.block_library_manager.filter_blocks(query, library_name, step_name)
+
+        block_list.clear()
+        for block in blocks:
+            block_name = str(block.get("name", block.get("id", "未知程序块")))
+            block_library = str(block.get("library", "未分类"))
+            language = str(block.get("language", "")).upper()
+            item_text = f"{block_name}  [{block_library}]"
+            if language:
+                item_text += f"  ({language})"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, str(block.get("id", "")))
+            block_list.addItem(item)
+
+        if block_list.count() > 0:
+            block_list.setCurrentRow(0)
+        self._on_block_selection_changed(step_name)
+
+    def _on_block_selection_changed(self, step_name: str):
+        meta = self.bottom_page_meta.get(step_name)
+        if not meta:
+            return
+
+        block_list = meta["block_list"]
+        insert_button = meta["insert_button"]
+        insert_button.setEnabled(block_list.currentItem() is not None)
+
+    def _insert_selected_block(self, step_name: str):
+        meta = self.bottom_page_meta.get(step_name)
+        if not meta:
+            return
+
+        block_list = meta["block_list"]
+        current_item = block_list.currentItem()
+        if current_item is None:
+            self.statusBar().showMessage("请先选择一个程序块", 2500)
+            return
+
+        block_id = str(current_item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        block = self.block_library_manager.get_block(block_id)
+        if not block:
+            self.statusBar().showMessage("程序块数据无效或不存在", 3000)
+            return
+
+        preferred_file = Path(self.current_edit_file) if self.current_edit_file else self._default_insert_target_file(step_name)
+        code_template = str(block.get("code_template", ""))
+        if not code_template.strip():
+            self.statusBar().showMessage("程序块代码为空，未执行插入", 2500)
+            return
+
+        active_file = preferred_file
+        if active_file is None:
+            self.statusBar().showMessage("请先在右侧 IDE 打开目标文件并定位光标", 3000)
+            return
+
+        self._apply_editor_language_by_path(active_file)
+        selected_language = self._detect_language_from_file(active_file)
+
+        target_folder = Path(self.current_target_folder) if self.current_target_folder else active_file.parent
+        preview_result = self.block_library_manager.preview_missing_definitions_for_language(
+            block,
+            target_folder,
+            active_file,
+            selected_language,
+        )
+        if not preview_result.get("ok"):
+            self.statusBar().showMessage(str(preview_result.get("message", "预览检查失败")), 3000)
+            return
+
+        if not self._confirm_block_insert(block, active_file, preview_result, code_template):
+            self.statusBar().showMessage("已取消插入", 2000)
+            return
+
+        requested_insert_pos = self.editor_insert_position
+
+        defs_result = self.block_library_manager.ensure_variable_definitions_for_language(
+            block,
+            target_folder,
+            active_file,
+            selected_language,
+        )
+        if not defs_result.get("ok"):
+            self.statusBar().showMessage(str(defs_result.get("message", "变量定义检查失败")), 3000)
+            return
+
+        file_text = ""
+        try:
+            if active_file.exists():
+                file_text = active_file.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            file_text = active_file.read_text(encoding="gbk", errors="replace")
+        except OSError:
+            self.statusBar().showMessage("读取最新文件内容失败，已停止插入", 3500)
+            return
+
+        self.file_content_edit.setPlainText(file_text)
+
+        cursor = self.file_content_edit.textCursor()
+        insert_pos = max(0, min(requested_insert_pos, len(self.file_content_edit.toPlainText())))
+        cursor.setPosition(insert_pos)
+        snippet = code_template
+        if snippet and not snippet.endswith("\n"):
+            snippet += "\n"
+        cursor.insertText(snippet)
+        self.file_content_edit.setTextCursor(cursor)
+        self.file_content_edit.add_tokens_from_text(snippet)
+
+        self.current_edit_file = active_file
+        try:
+            active_file.parent.mkdir(parents=True, exist_ok=True)
+            active_file.write_text(self.file_content_edit.toPlainText(), encoding="utf-8")
+        except OSError:
+            self.statusBar().showMessage("程序块已插入编辑器，但写入文件失败", 3500)
+            return
+
+        self.file_path_label.setText(f"路径: {active_file}")
+        self._apply_editor_language_by_path(active_file)
+        self._on_editor_cursor_position_changed()
+        self.statusBar().showMessage("程序块已插入到 IDE 指定位置，并同步写入文件", 3000)
+        return
+
+    def _confirm_block_insert(self, block, active_file: Path, preview_result, code_template: str):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("程序块插入预览")
+        dialog.setModal(True)
+        dialog.resize(760, 560)
+
+        layout = QVBoxLayout(dialog)
+
+        block_name = str(block.get("name", block.get("id", "未知程序块")))
+        header = QLabel(f"程序块: {block_name}", dialog)
+        target_label = QLabel(f"代码插入文件: {active_file}", dialog)
+        cursor_label = QLabel(f"IDE 插入位置: 第 {self.editor_insert_line} 行, 第 {self.editor_insert_column} 列", dialog)
+
+        def_file = preview_result.get("definition_file", "")
+        defs_title = QLabel(f"变量定义检查文件: {def_file}", dialog)
+
+        missing_defs = preview_result.get("missing_definitions", [])
+        defs_editor = QPlainTextEdit(dialog)
+        defs_editor.setReadOnly(True)
+        if missing_defs:
+            defs_editor.setPlainText("\n".join(missing_defs))
+        else:
+            defs_editor.setPlainText("(无缺失变量定义)")
+        defs_editor.setMaximumHeight(140)
+
+        code_title = QLabel("即将插入的程序块代码:", dialog)
+        code_editor = QPlainTextEdit(dialog)
+        code_editor.setReadOnly(True)
+        code_editor.setPlainText(code_template)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            Qt.Orientation.Horizontal,
+            dialog,
+        )
+        ok_button = button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.setText("确认插入")
+        cancel_button = button_box.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button is not None:
+            cancel_button.setText("取消")
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+
+        layout.addWidget(header)
+        layout.addWidget(target_label)
+        layout.addWidget(cursor_label)
+        layout.addSpacing(4)
+        layout.addWidget(defs_title)
+        layout.addWidget(defs_editor)
+        layout.addWidget(code_title)
+        layout.addWidget(code_editor, 1)
+        layout.addWidget(button_box)
+
+        return dialog.exec() == int(QDialog.DialogCode.Accepted)
 
     def _switch_middle_pages(self, index):
         if not self.timeline_widget.step_names:
@@ -845,6 +1134,7 @@ class MainWindow(QMainWindow):
         self.current_edit_file = output_path
         self._apply_editor_language_by_path(output_path)
         self._refresh_outputs_and_status(folder_path)
+        self._refresh_all_block_lists()
         self.statusBar().showMessage("JSON 文件已生成", 2500)
 
     def read_file(self):
@@ -887,6 +1177,7 @@ class MainWindow(QMainWindow):
                 pass
 
         self._refresh_outputs_and_status(selected_folder)
+        self._refresh_all_block_lists()
         self.statusBar().showMessage("文件读取成功", 2000)
 
     def on_dot_selected(self, index):
