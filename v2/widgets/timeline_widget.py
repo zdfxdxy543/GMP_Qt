@@ -9,8 +9,7 @@ class TimelineWidget(QWidget):
     dot_selected = pyqtSignal(int)
 
     COLOR_PENDING = QColor(150, 150, 150)
-    COLOR_ACTIVE = QColor(46, 169, 79)
-    COLOR_DONE = QColor(40, 120, 200)
+    COLOR_DONE = QColor(46, 169, 79)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -31,8 +30,7 @@ class TimelineWidget(QWidget):
         ]
         self.step_status = ["pending" for _ in self.step_names]
         if self.step_status:
-            # Initial state: first step is currently in progress.
-            self.step_status[0] = "active"
+            # Initial state: no generated files yet.
             self.selected_index = 0
 
     def paintEvent(self, event):
@@ -41,7 +39,10 @@ class TimelineWidget(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        x = 56
+        # 水平居中：将时间线放在窗口宽度的中心
+        x = self.width() // 2
+        
+        # 保持原始的垂直设置
         top_margin = 40
         bottom_margin = 40
         dot_count = len(self.step_names)
@@ -79,7 +80,7 @@ class TimelineWidget(QWidget):
             )
 
             # Draw label below each node to keep step name bound to its dot.
-            painter.setPen(QPen(QColor(35, 35, 35), 1))
+            painter.setPen(QPen(QColor(255, 255, 255), 1))
             painter.drawText(
                 x - 100,
                 y + self.dot_radius + 16,
@@ -90,7 +91,10 @@ class TimelineWidget(QWidget):
             )
 
     def _dot_center(self, index):
-        x = 56
+        # 水平居中：将时间线放在窗口宽度的中心
+        x = self.width() // 2
+        
+        # 保持原始的垂直设置
         top_margin = 40
         bottom_margin = 40
         dot_count = len(self.step_names)
@@ -102,12 +106,10 @@ class TimelineWidget(QWidget):
     def _status_color(self, status):
         if status == "done":
             return self.COLOR_DONE
-        if status == "active":
-            return self.COLOR_ACTIVE
         return self.COLOR_PENDING
 
     def _is_clickable(self, index):
-        return self.step_status[index] in {"active", "done"}
+        return 0 <= index < len(self.step_names)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -136,11 +138,19 @@ class TimelineWidget(QWidget):
         return ""
 
     def reset_after_file_created(self):
-        # New file created: first step starts as active, the rest are pending.
+        # New file created: all steps remain pending until output files exist.
         self.step_status = ["pending" for _ in self.step_names]
         if self.step_status:
-            self.step_status[0] = "active"
             self.selected_index = 0
         else:
             self.selected_index = -1
+        self.update()
+
+    def mark_step_done(self, index):
+        if not (0 <= index < len(self.step_names)):
+            return
+
+        self.step_status[index] = "done"
+
+        self.selected_index = index
         self.update()
