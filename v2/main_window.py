@@ -2,19 +2,23 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
+    QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMenu,
+    QPushButton,
+    QStyle,
     QWizard,
     QStackedWidget,
     QSplitter,
-    QTextEdit,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -22,6 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from dialogs.new_file_dialog import NewFileDialog
+from widgets.code_editor import CodeEditor
 from widgets.source_ui_loader import create_visual_widget_from_py
 from widgets.timeline_widget import TimelineWidget
 
@@ -41,10 +46,15 @@ class MainWindow(QMainWindow):
         self.top_stack = None
         self.bottom_stack = None
         self.top_page_meta = {}
+        self.editor_language_combo = None
 
         self.current_controller = ""
         self.current_chip = ""
         self.current_target_folder = ""
+        self.current_edit_file = None
+        self.current_theme = "light"
+        self.middle_splitter = None
+        self.horizontal_splitter = None
 
         self.step_py_map = {
             "ctrl_settings": "ctrl_settings_setup.py",
@@ -57,7 +67,246 @@ class MainWindow(QMainWindow):
 
         self._setup_toolbar()
         self._setup_central_ui()
+        self._apply_window_theme(self.current_theme)
         self.statusBar().showMessage("就绪")
+
+    def _light_theme_stylesheet(self):
+        return """
+            QMainWindow, QWidget {
+                background-color: #f3f5f7;
+                color: #1f2328;
+            }
+            QGroupBox {
+                background-color: #ffffff;
+                border: 1px solid #d0d7de;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 8px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 8px;
+                left: 8px;
+                color: #1f2328;
+            }
+            QLabel {
+                color: #1f2328;
+            }
+            QToolBar {
+                background-color: #ffffff;
+                border-bottom: 1px solid #d0d7de;
+                spacing: 6px;
+                padding: 4px 6px;
+            }
+            QToolButton {
+                background-color: #ffffff;
+                color: #1f2328;
+                border: 1px solid #c9d1d9;
+                border-radius: 6px;
+                padding: 4px 10px;
+            }
+            QToolButton:hover {
+                background-color: #e7f1ff;
+                border-color: #8ab4f8;
+            }
+            QToolButton:pressed {
+                background-color: #dbeafe;
+            }
+            QMenu {
+                background-color: #ffffff;
+                color: #1f2328;
+                border: 1px solid #d0d7de;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+            }
+            QMenu::item:selected {
+                background-color: #2f81f7;
+                color: #ffffff;
+            }
+            QStatusBar {
+                background-color: #ffffff;
+                color: #1f2328;
+                border-top: 1px solid #d0d7de;
+            }
+            QPushButton[editorToolButton="true"] {
+                background-color: #ffffff;
+                border: 1px solid #c9d1d9;
+                border-radius: 6px;
+                min-width: 30px;
+                max-width: 30px;
+                min-height: 30px;
+                max-height: 30px;
+                padding: 0px;
+            }
+            QPushButton[editorToolButton="true"]:hover {
+                background-color: #e7f1ff;
+                border-color: #8ab4f8;
+            }
+            QPushButton[editorToolButton="true"]:pressed {
+                background-color: #dbeafe;
+            }
+            QPushButton[editorToolButton="true"]:disabled {
+                background-color: #eef1f4;
+                border-color: #d8dee4;
+            }
+            QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QListView, QTreeView {
+                color: #1f2328;
+            }
+            """
+
+    def _dark_theme_stylesheet(self):
+        return """
+            QMainWindow, QWidget {
+                background-color: #1f2228;
+                color: #d7dce2;
+            }
+            QGroupBox {
+                background-color: #252a31;
+                border: 1px solid #3a414c;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 8px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 8px;
+                left: 8px;
+                color: #d7dce2;
+            }
+            QLabel {
+                color: #d7dce2;
+            }
+            QToolBar {
+                background-color: #252a31;
+                border-bottom: 1px solid #3a414c;
+                spacing: 6px;
+                padding: 4px 6px;
+            }
+            QToolButton {
+                background-color: #2f3540;
+                color: #d7dce2;
+                border: 1px solid #49515e;
+                border-radius: 6px;
+                padding: 4px 10px;
+            }
+            QToolButton:hover {
+                background-color: #394252;
+                border-color: #6b8fc9;
+            }
+            QToolButton:pressed {
+                background-color: #314059;
+            }
+            QMenu {
+                background-color: #252a31;
+                color: #d7dce2;
+                border: 1px solid #3a414c;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+            }
+            QMenu::item:selected {
+                background-color: #2f81f7;
+                color: #ffffff;
+            }
+            QStatusBar {
+                background-color: #252a31;
+                color: #d7dce2;
+                border-top: 1px solid #3a414c;
+            }
+            QPushButton[editorToolButton="true"] {
+                background-color: #2f3540;
+                border: 1px solid #49515e;
+                border-radius: 6px;
+                min-width: 30px;
+                max-width: 30px;
+                min-height: 30px;
+                max-height: 30px;
+                padding: 0px;
+            }
+            QPushButton[editorToolButton="true"]:hover {
+                background-color: #394252;
+                border-color: #6b8fc9;
+            }
+            QPushButton[editorToolButton="true"]:pressed {
+                background-color: #314059;
+            }
+            QPushButton[editorToolButton="true"]:disabled {
+                background-color: #2a2f36;
+                border-color: #3f4652;
+            }
+            QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QListView, QTreeView {
+                color: #d7dce2;
+            }
+            """
+
+    def _apply_splitter_style(self):
+        if self.current_theme == "dark":
+            splitter_style = """
+                QSplitter::handle { background-color: #3f4652; }
+                QSplitter::handle:hover { background-color: #6b8fc9; }
+                QSplitter::handle:pressed { background-color: #4d74b8; }
+                QSplitter::handle:horizontal { width: 10px; margin: 0 2px; }
+                QSplitter::handle:vertical { height: 10px; margin: 2px 0; }
+            """
+        else:
+            splitter_style = """
+                QSplitter::handle { background-color: #d0d5db; }
+                QSplitter::handle:hover { background-color: #7aa8ff; }
+                QSplitter::handle:pressed { background-color: #4a7de0; }
+                QSplitter::handle:horizontal { width: 10px; margin: 0 2px; }
+                QSplitter::handle:vertical { height: 10px; margin: 2px 0; }
+            """
+
+        if self.horizontal_splitter is not None:
+            self.horizontal_splitter.setStyleSheet(splitter_style)
+        if self.middle_splitter is not None:
+            self.middle_splitter.setStyleSheet(splitter_style)
+
+    def _apply_window_theme(self, theme_name):
+        self.current_theme = theme_name if theme_name in {"light", "dark"} else "light"
+        stylesheet = self._dark_theme_stylesheet() if self.current_theme == "dark" else self._light_theme_stylesheet()
+        self.setStyleSheet(stylesheet)
+        self._apply_splitter_style()
+
+        if self.file_content_edit is not None and hasattr(self.file_content_edit, "set_theme"):
+            self.file_content_edit.set_theme(self.current_theme)
+        if self.timeline_widget is not None and hasattr(self.timeline_widget, "set_theme"):
+            self.timeline_widget.set_theme(self.current_theme)
+
+    def _open_preferences_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("首选项")
+        dialog.setModal(True)
+
+        layout = QVBoxLayout(dialog)
+        label = QLabel("主题", dialog)
+        theme_combo = QComboBox(dialog)
+        theme_combo.addItem("浅色", "light")
+        theme_combo.addItem("深色", "dark")
+
+        selected_index = theme_combo.findData(self.current_theme)
+        if selected_index >= 0:
+            theme_combo.setCurrentIndex(selected_index)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            Qt.Orientation.Horizontal,
+            dialog,
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+
+        layout.addWidget(label)
+        layout.addWidget(theme_combo)
+        layout.addWidget(button_box)
+
+        if dialog.exec() == int(QDialog.DialogCode.Accepted):
+            self._apply_window_theme(theme_combo.currentData())
 
     def _setup_toolbar(self):
         toolbar = QToolBar("顶部工具栏", self)
@@ -68,17 +317,148 @@ class MainWindow(QMainWindow):
 
         new_action = QAction("新建...", self)
         read_action = QAction("读取...", self)
+        save_action = QAction("保存", self)
+        save_as_action = QAction("另存为...", self)
+        preferences_action = QAction("首选项...", self)
+
+        new_action.setShortcut(QKeySequence.StandardKey.New)
+        read_action.setShortcut(QKeySequence.StandardKey.Open)
+        save_action.setShortcuts([QKeySequence.StandardKey.Save, QKeySequence("Ctrl+S")])
+        save_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
+        preferences_action.setShortcut(QKeySequence("Ctrl+,"))
+
+        for action in (new_action, read_action, save_action, save_as_action, preferences_action):
+            action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+
         file_menu.addAction(new_action)
         file_menu.addAction(read_action)
+        file_menu.addSeparator()
+        file_menu.addAction(save_action)
+        file_menu.addAction(save_as_action)
+        file_menu.addSeparator()
+        file_menu.addAction(preferences_action)
 
         new_action.triggered.connect(self.create_new_file)
         read_action.triggered.connect(self.read_file)
+        save_action.triggered.connect(self.save_current_file)
+        save_as_action.triggered.connect(self.save_file_as)
+        preferences_action.triggered.connect(self._open_preferences_dialog)
+
+        edit_menu = QMenu("编辑", self)
+
+        undo_action = QAction("撤销", self)
+        redo_action = QAction("恢复", self)
+        copy_action = QAction("复制", self)
+        cut_action = QAction("剪切", self)
+        paste_action = QAction("粘贴", self)
+        select_all_action = QAction("全选", self)
+
+        undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        redo_action.setShortcuts([QKeySequence.StandardKey.Redo, QKeySequence("Ctrl+Y")])
+        copy_action.setShortcut(QKeySequence.StandardKey.Copy)
+        cut_action.setShortcut(QKeySequence.StandardKey.Cut)
+        paste_action.setShortcut(QKeySequence.StandardKey.Paste)
+        select_all_action.setShortcut(QKeySequence.StandardKey.SelectAll)
+
+        for action in (undo_action, redo_action, copy_action, cut_action, paste_action, select_all_action):
+            action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+
+        undo_action.triggered.connect(lambda: self._invoke_editor_method("undo"))
+        redo_action.triggered.connect(lambda: self._invoke_editor_method("redo"))
+        copy_action.triggered.connect(lambda: self._invoke_editor_method("copy"))
+        cut_action.triggered.connect(lambda: self._invoke_editor_method("cut"))
+        paste_action.triggered.connect(lambda: self._invoke_editor_method("paste"))
+        select_all_action.triggered.connect(lambda: self._invoke_editor_method("selectAll"))
+
+        edit_menu.addAction(undo_action)
+        edit_menu.addAction(redo_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(copy_action)
+        edit_menu.addAction(cut_action)
+        edit_menu.addAction(paste_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(select_all_action)
 
         file_button = QToolButton(self)
         file_button.setText("文件工具")
         file_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         file_button.setMenu(file_menu)
         toolbar.addWidget(file_button)
+
+        edit_button = QToolButton(self)
+        edit_button.setText("编辑工具")
+        edit_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        edit_button.setMenu(edit_menu)
+        toolbar.addWidget(edit_button)
+
+    def _invoke_editor_method(self, method_name):
+        if self.file_content_edit is None:
+            return
+        method = getattr(self.file_content_edit, method_name, None)
+        if callable(method):
+            method()
+
+    def _set_editor_language(self, language_name):
+        if self.file_content_edit is not None and hasattr(self.file_content_edit, "set_language"):
+            self.file_content_edit.set_language(language_name)
+
+    def _sync_language_combo(self, language_name):
+        if self.editor_language_combo is None:
+            return
+        index = self.editor_language_combo.findData(language_name)
+        if index < 0:
+            return
+        was_blocked = self.editor_language_combo.blockSignals(True)
+        self.editor_language_combo.setCurrentIndex(index)
+        self.editor_language_combo.blockSignals(was_blocked)
+
+    def _detect_language_from_file(self, file_path: Path):
+        suffix = file_path.suffix.lower()
+        if suffix == ".py":
+            return "Python"
+        if suffix in {".c", ".h"}:
+            return "C"
+        if suffix in {".cpp", ".cxx", ".cc", ".hpp", ".hh", ".hxx"}:
+            return "C++"
+        return self.editor_language_combo.currentData() if self.editor_language_combo is not None else "C++"
+
+    def _apply_editor_language_by_path(self, file_path: Path):
+        language_name = self._detect_language_from_file(file_path)
+        self._sync_language_combo(language_name)
+        self._set_editor_language(language_name)
+
+    def _on_editor_language_changed(self):
+        if self.editor_language_combo is None:
+            return
+        self._set_editor_language(self.editor_language_combo.currentData())
+
+    def save_current_file(self):
+        if self.file_content_edit is None:
+            return
+
+        if self.current_edit_file is None:
+            self.save_file_as()
+            return
+
+        file_path = Path(self.current_edit_file)
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(self.file_content_edit.toPlainText(), encoding="utf-8")
+        except OSError:
+            self.statusBar().showMessage("保存失败", 3000)
+            return
+
+        self.file_path_label.setText(f"路径: {file_path}")
+        self.statusBar().showMessage(f"已保存: {file_path.name}", 2000)
+
+    def save_file_as(self):
+        default_path = self.current_edit_file or (self._project_root() / "untitled.txt")
+        file_path, _ = QFileDialog.getSaveFileName(self, "另存为", str(default_path), "所有文件 (*.*)")
+        if not file_path:
+            return
+
+        self.current_edit_file = Path(file_path)
+        self.save_current_file()
 
     def _setup_central_ui(self):
         central = QWidget(self)
@@ -105,61 +485,90 @@ class MainWindow(QMainWindow):
         bottom_panel_layout.addWidget(self.bottom_stack)
 
         # Middle column: vertical splitter for top/bottom areas.
-        middle_splitter = QSplitter(Qt.Orientation.Vertical, central)
-        middle_splitter.setChildrenCollapsible(False)
-        middle_splitter.addWidget(top_panel)
-        middle_splitter.addWidget(bottom_panel)
-        middle_splitter.setSizes([1, 1])
+        self.middle_splitter = QSplitter(Qt.Orientation.Vertical, central)
+        self.middle_splitter.setChildrenCollapsible(False)
+        self.middle_splitter.addWidget(top_panel)
+        self.middle_splitter.addWidget(bottom_panel)
+        self.middle_splitter.setSizes([1, 1])
 
         file_area = QWidget(central)
         file_layout = QVBoxLayout(file_area)
         file_layout.setContentsMargins(0, 0, 0, 0)
         file_layout.setSpacing(8)
 
-        title = QLabel("文件内容读取 + 显示", file_area)
+        file_header = QWidget(file_area)
+        file_header_layout = QHBoxLayout(file_header)
+        file_header_layout.setContentsMargins(0, 0, 0, 0)
+        file_header_layout.setSpacing(8)
+
+        title = QLabel("文件内容读取 + 显示", file_header)
         title.setStyleSheet("font-weight: 600; font-size: 14px;")
+
+        self.editor_language_combo = QComboBox(file_header)
+        self.editor_language_combo.addItem("C", "C")
+        self.editor_language_combo.addItem("C++", "C++")
+        self.editor_language_combo.addItem("Python", "Python")
+        self.editor_language_combo.setCurrentIndex(self.editor_language_combo.findData("C++"))
+        self.editor_language_combo.setToolTip("选择编辑器关键词与补全语言")
+        self.editor_language_combo.currentIndexChanged.connect(self._on_editor_language_changed)
+
+        file_header_layout.addWidget(title)
+        file_header_layout.addStretch(1)
+        file_header_layout.addWidget(self.editor_language_combo)
 
         self.file_path_label = QLabel("路径: (未选择)", file_area)
         self.file_path_label.setWordWrap(True)
 
-        self.file_content_edit = QTextEdit(file_area)
-        self.file_content_edit.setPlaceholderText("点击 文件工具 -> 读取文件 来加载内容")
+        editor_tools = QWidget(file_area)
+        editor_tools_layout = QHBoxLayout(editor_tools)
+        editor_tools_layout.setContentsMargins(0, 0, 0, 0)
+        editor_tools_layout.setSpacing(6)
 
-        file_layout.addWidget(title)
+        save_btn = QPushButton(editor_tools)
+        undo_btn = QPushButton(editor_tools)
+        redo_btn = QPushButton(editor_tools)
+
+        save_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        undo_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        redo_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward))
+
+        for button, tooltip in (
+            (save_btn, "保存 (Ctrl+S)"),
+            (undo_btn, "撤销 (Ctrl+Z)"),
+            (redo_btn, "恢复 (Ctrl+Y / Ctrl+Shift+Z)"),
+        ):
+            button.setToolTip(tooltip)
+            button.setProperty("editorToolButton", True)
+            button.setFixedSize(30, 30)
+            button.setIconSize(QSize(18, 18))
+
+        save_btn.clicked.connect(self.save_current_file)
+        undo_btn.clicked.connect(lambda: self._invoke_editor_method("undo"))
+        redo_btn.clicked.connect(lambda: self._invoke_editor_method("redo"))
+
+        editor_tools_layout.addWidget(save_btn)
+        editor_tools_layout.addWidget(undo_btn)
+        editor_tools_layout.addWidget(redo_btn)
+        editor_tools_layout.addStretch(1)
+
+        self.file_content_edit = CodeEditor(self._project_root(), file_area)
+        self.file_content_edit.setPlaceholderText("点击 文件工具 -> 读取文件 来加载内容")
+        self._set_editor_language(self.editor_language_combo.currentData())
+
+        file_layout.addWidget(file_header)
         file_layout.addWidget(self.file_path_label)
+        file_layout.addWidget(editor_tools)
         file_layout.addWidget(self.file_content_edit, 1)
 
         # Outer splitter: horizontal, keeps default 1/6 : 1/3 : 1/2 and supports drag resize.
-        horizontal_splitter = QSplitter(Qt.Orientation.Horizontal, central)
-        horizontal_splitter.setChildrenCollapsible(False)
-        horizontal_splitter.addWidget(timeline)
-        horizontal_splitter.addWidget(middle_splitter)
-        horizontal_splitter.addWidget(file_area)
-        horizontal_splitter.setSizes([200, 400, 600])
+        self.horizontal_splitter = QSplitter(Qt.Orientation.Horizontal, central)
+        self.horizontal_splitter.setChildrenCollapsible(False)
+        self.horizontal_splitter.addWidget(timeline)
+        self.horizontal_splitter.addWidget(self.middle_splitter)
+        self.horizontal_splitter.addWidget(file_area)
+        self.horizontal_splitter.setSizes([200, 400, 600])
 
-        splitter_style = """
-            QSplitter::handle {
-                background-color: #d0d5db;
-            }
-            QSplitter::handle:hover {
-                background-color: #7aa8ff;
-            }
-            QSplitter::handle:pressed {
-                background-color: #4a7de0;
-            }
-            QSplitter::handle:horizontal {
-                width: 10px;
-                margin: 0 2px;
-            }
-            QSplitter::handle:vertical {
-                height: 10px;
-                margin: 2px 0;
-            }
-        """
-        horizontal_splitter.setStyleSheet(splitter_style)
-        middle_splitter.setStyleSheet(splitter_style)
-
-        root_layout.addWidget(horizontal_splitter)
+        root_layout.addWidget(self.horizontal_splitter)
         self.setCentralWidget(central)
         self._reload_top_visual_pages()
         self._switch_middle_pages(self.timeline_widget.selected_index)
@@ -287,12 +696,14 @@ class MainWindow(QMainWindow):
         if not file_name:
             self.file_path_label.setText("路径: (当前步骤无对应输出文件)")
             self.file_content_edit.clear()
+            self.current_edit_file = None
             return
 
         file_path = folder_path / file_name
         if not file_path.exists() or not file_path.is_file():
             self.file_path_label.setText(f"路径: {file_path} (未生成)")
             self.file_content_edit.clear()
+            self.current_edit_file = None
             return
 
         try:
@@ -302,6 +713,9 @@ class MainWindow(QMainWindow):
 
         self.file_path_label.setText(f"路径: {file_path}")
         self.file_content_edit.setPlainText(content)
+        self.file_content_edit.add_tokens_from_text(content)
+        self.current_edit_file = file_path
+        self._apply_editor_language_by_path(file_path)
 
     def _refresh_outputs_and_status(self, folder_path: Path):
         if not folder_path.exists() or not folder_path.is_dir():
@@ -427,6 +841,9 @@ class MainWindow(QMainWindow):
                 ]
             )
         )
+        self.file_content_edit.add_tokens_from_text(self.file_content_edit.toPlainText())
+        self.current_edit_file = output_path
+        self._apply_editor_language_by_path(output_path)
         self._refresh_outputs_and_status(folder_path)
         self.statusBar().showMessage("JSON 文件已生成", 2500)
 
@@ -445,6 +862,9 @@ class MainWindow(QMainWindow):
 
         self.file_path_label.setText(f"路径: {file_path}")
         self.file_content_edit.setPlainText(content)
+        self.file_content_edit.add_tokens_from_text(content)
+        self.current_edit_file = Path(file_path)
+        self._apply_editor_language_by_path(Path(file_path))
 
         selected_folder = Path(file_path).parent
         if Path(file_path).suffix.lower() == ".json":
@@ -477,4 +897,5 @@ class MainWindow(QMainWindow):
         else:
             self.file_path_label.setText("路径: (未选择目标文件夹)")
             self.file_content_edit.clear()
+            self.current_edit_file = None
         self.statusBar().showMessage(f"已选中步骤: {step_name}", 2000)

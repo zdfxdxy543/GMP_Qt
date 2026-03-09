@@ -32,6 +32,20 @@ class TimelineWidget(QWidget):
         if self.step_status:
             # Initial state: no generated files yet.
             self.selected_index = 0
+        self.set_theme("light")
+
+    def set_theme(self, theme_name: str):
+        if theme_name == "dark":
+            self.line_color = QColor(120, 130, 145)
+            self.label_color = QColor(215, 220, 226)
+            self.selected_outer_color = QColor(255, 180, 90)
+            self.node_border_color = QColor(140, 180, 240)
+        else:
+            self.line_color = QColor(90, 90, 90)
+            self.label_color = QColor(31, 35, 40)
+            self.selected_outer_color = QColor(255, 166, 0)
+            self.node_border_color = QColor(20, 70, 130)
+        self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -49,7 +63,7 @@ class TimelineWidget(QWidget):
         usable_height = max(0, self.height() - top_margin - bottom_margin)
         spacing = usable_height // (dot_count - 1) if dot_count > 1 else 0
 
-        painter.setPen(QPen(QColor(90, 90, 90), 2))
+        painter.setPen(QPen(self.line_color, 2))
         for i in range(dot_count - 1):
             y1 = top_margin + i * spacing
             y2 = top_margin + (i + 1) * spacing
@@ -61,16 +75,16 @@ class TimelineWidget(QWidget):
 
             if i == self.selected_index:
                 # Draw a stronger ring on the selected dot for clear visual feedback.
-                painter.setPen(QPen(QColor(255, 166, 0), 4))
+                painter.setPen(QPen(self.selected_outer_color, 4))
                 painter.drawEllipse(
                     x - self.dot_radius - 4,
                     y - self.dot_radius - 4,
                     (self.dot_radius + 4) * 2,
                     (self.dot_radius + 4) * 2,
                 )
-                painter.setPen(QPen(QColor(20, 70, 130), 3))
+                painter.setPen(QPen(self.node_border_color, 3))
             else:
-                painter.setPen(QPen(QColor(20, 70, 130), 2))
+                painter.setPen(QPen(self.node_border_color, 2))
 
             painter.drawEllipse(
                 x - self.dot_radius,
@@ -80,7 +94,7 @@ class TimelineWidget(QWidget):
             )
 
             # Draw label below each node to keep step name bound to its dot.
-            painter.setPen(QPen(QColor(255, 255, 255), 1))
+            painter.setPen(QPen(self.label_color, 1))
             painter.drawText(
                 x - 100,
                 y + self.dot_radius + 16,
