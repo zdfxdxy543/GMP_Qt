@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
@@ -29,9 +31,6 @@ class TimelineWidget(QWidget):
             "simulink_buffer",
         ]
         self.step_status = ["pending" for _ in self.step_names]
-        if self.step_status:
-            # Initial state: no generated files yet.
-            self.selected_index = 0
         self.set_theme("light")
 
     def set_theme(self, theme_name: str):
@@ -154,10 +153,28 @@ class TimelineWidget(QWidget):
     def reset_after_file_created(self):
         # New file created: all steps remain pending until output files exist.
         self.step_status = ["pending" for _ in self.step_names]
-        if self.step_status:
+        self.selected_index = -1
+        self.update()
+
+    def refresh_status_by_search_path(self, search_path, step_file_map):
+        step_path_map = {step_name: search_path for step_name in self.step_names}
+        self.refresh_status_by_step_paths(step_path_map, step_file_map)
+
+    def refresh_status_by_step_paths(self, step_path_map, step_file_map):
+        statuses = ["pending" for _ in self.step_names]
+
+        for index, step_name in enumerate(self.step_names):
+            file_name = step_file_map.get(step_name)
+            search_path = step_path_map.get(step_name)
+            if not file_name or not search_path:
+                continue
+            folder = Path(search_path)
+            if (folder / file_name).is_file():
+                statuses[index] = "done"
+
+        self.step_status = statuses
+        if self.step_names and self.selected_index < 0:
             self.selected_index = 0
-        else:
-            self.selected_index = -1
         self.update()
 
     def mark_step_done(self, index):

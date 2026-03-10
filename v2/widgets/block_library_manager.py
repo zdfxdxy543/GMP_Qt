@@ -246,6 +246,58 @@ class BlockLibraryManager:
             "insert_file": str(target_file),
         }
 
+    def preview_missing_definitions_in_text_for_language(
+        self,
+        block: dict[str, Any],
+        text: str,
+        language_name: str = "C",
+        file_path: Path | None = None,
+    ):
+        if not block:
+            return {
+                "ok": False,
+                "message": "程序块数据无效",
+                "missing_definitions": [],
+                "definition_file": "",
+                "region": None,
+            }
+
+        region = self._find_declaration_region(text or "")
+        if region is None:
+            return {
+                "ok": False,
+                "message": "当前 IDE 文件未找到声明区注释 //BEGINDECLARATION 或 //ENDDECLARATION(或 //ENDDECLEARATION)，已停止插入",
+                "missing_definitions": [],
+                "definition_file": str(file_path) if file_path is not None else "",
+                "region": None,
+            }
+
+        start_pos, end_pos = region
+        declaration_region_text = (text or "")[start_pos:end_pos]
+        normalized_language = self._normalize_language(language_name, file_path)
+
+        missing_definitions = []
+        variables = block.get("variables", []) if isinstance(block.get("variables", []), list) else []
+        for var_item in variables:
+            if not isinstance(var_item, dict):
+                continue
+            var_name = str(var_item.get("name", "")).strip()
+            if not var_name:
+                continue
+            if self._is_name_defined(declaration_region_text, var_name):
+                continue
+            declaration_line = self._build_declaration_line(var_item, normalized_language)
+            if declaration_line:
+                missing_definitions.append(declaration_line)
+
+        return {
+            "ok": True,
+            "message": "预检完成",
+            "missing_definitions": missing_definitions,
+            "definition_file": str(file_path) if file_path is not None else "",
+            "region": region,
+        }
+
     def _resolve_declaration_file(self, block: dict[str, Any], target_folder: Path, preferred_file: Path | None):
         if preferred_file is None:
             return None

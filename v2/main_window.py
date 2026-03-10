@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -17,12 +18,15 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QStyle,
     QWizard,
     QStackedWidget,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -57,6 +61,8 @@ class MainWindow(QMainWindow):
         self.current_controller = ""
         self.current_chip = ""
         self.current_target_folder = ""
+        self.step_target_folders = {}
+        self.current_config_json_path = None
         self.current_edit_file = None
         self.current_theme = "light"
         self.middle_splitter = None
@@ -66,6 +72,10 @@ class MainWindow(QMainWindow):
         self.editor_insert_line = 1
         self.editor_insert_column = 1
         self.global_position_label = None
+        self.editor_dirty = False
+        self._editor_baseline_text = ""
+        self._suspend_dirty_tracking = False
+        self._active_step_index = -1
 
         self.step_py_map = {
             "ctrl_settings": "ctrl_settings_setup.py",
@@ -463,6 +473,86 @@ class MainWindow(QMainWindow):
         if self.global_position_label is not None:
             self.global_position_label.setText(text)
 
+    def _set_file_path_label(self, text: str):
+        if self.file_path_label is None:
+            return
+        self.file_path_label.setText(text)
+        if self.editor_dirty and not text.endswith(" *"):
+            self.file_path_label.setText(f"{text} *")
+
+    def _set_editor_dirty(self, dirty: bool):
+        self.editor_dirty = bool(dirty)
+        if self.file_path_label is None:
+            return
+
+        current = self.file_path_label.text()
+        if self.editor_dirty:
+            if not current.endswith(" *"):
+                self.file_path_label.setText(f"{current} *")
+        else:
+            if current.endswith(" *"):
+                self.file_path_label.setText(current[:-2])
+
+    def _on_editor_text_changed(self):
+        if self._suspend_dirty_tracking:
+            return
+
+        current_text = self.file_content_edit.toPlainText()
+        if self.current_edit_file is None and not current_text.strip():
+            self._editor_baseline_text = current_text
+            self._set_editor_dirty(False)
+            return
+        self._set_editor_dirty(current_text != self._editor_baseline_text)
+
+    def _set_editor_text(self, text: str, mark_dirty: bool = False):
+        if self.file_content_edit is None:
+            return
+        self._suspend_dirty_tracking = True
+        try:
+            self.file_content_edit.setPlainText(text)
+            self.file_content_edit.add_tokens_from_text(text)
+        finally:
+            self._suspend_dirty_tracking = False
+        if not mark_dirty:
+            self._editor_baseline_text = text
+        self._set_editor_dirty(mark_dirty)
+
+    def _clear_editor_text(self):
+        if self.file_content_edit is None:
+            return
+        self._suspend_dirty_tracking = True
+        try:
+            self.file_content_edit.clear()
+        finally:
+            self._suspend_dirty_tracking = False
+        self._editor_baseline_text = ""
+        self._set_editor_dirty(False)
+
+    def _prompt_save_if_dirty(self, action_text: str):
+        if not self.editor_dirty:
+            return True
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("未保存更改")
+        box.setText(f"当前文件有未保存更改，是否先保存再{action_text}？")
+        box.setInformativeText("选择“保存”将写入文件；选择“不保存”将放弃未保存改动。")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel
+        )
+        box.setDefaultButton(QMessageBox.StandardButton.Save)
+        choice = box.exec()
+
+        if choice == QMessageBox.StandardButton.Cancel:
+            return False
+        if choice == QMessageBox.StandardButton.Discard:
+            return True
+
+        self.save_current_file()
+        return not self.editor_dirty
+
     def save_current_file(self):
         if self.file_content_edit is None:
             return
@@ -479,8 +569,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("保存失败", 3000)
             return
 
-        self.file_path_label.setText(f"路径: {file_path}")
+        self._set_file_path_label(f"路径: {file_path}")
         self._apply_editor_language_by_path(file_path)
+        self._editor_baseline_text = self.file_content_edit.toPlainText()
+        self._set_editor_dirty(False)
         self.statusBar().showMessage(f"已保存: {file_path.name}", 2000)
 
     def save_file_as(self):
@@ -588,6 +680,7 @@ class MainWindow(QMainWindow):
         self.file_content_edit.setPlaceholderText("点击 文件工具 -> 读取文件 来加载内容")
         self._set_editor_language(self.editor_language_combo.currentData())
         self.file_content_edit.cursorPositionChanged.connect(self._on_editor_cursor_position_changed)
+        self.file_content_edit.textChanged.connect(self._on_editor_text_changed)
 
         file_layout.addWidget(file_header)
         file_layout.addWidget(self.file_path_label)
@@ -606,7 +699,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self._reload_top_visual_pages()
         self._switch_middle_pages(self.timeline_widget.selected_index)
+        self._active_step_index = self.timeline_widget.selected_index
         self._on_editor_cursor_position_changed()
+        self._set_editor_dirty(False)
 
     def _init_middle_top_pages(self):
         self.top_page_meta = {}
@@ -688,8 +783,20 @@ class MainWindow(QMainWindow):
                 self._set_top_step_widget(step_name, placeholder)
                 continue
 
+            output_file_name = self._output_file_name_by_step(step_name)
+            step_folder = self._folder_for_step(step_name)
+            if output_file_name and step_folder is not None:
+                output_path = step_folder / output_file_name
+                if output_path.exists() and output_path.is_file():
+                    placeholder = self._build_placeholder_widget(
+                        f"检测到程序文件已存在，已跳过向导:\n{output_path}"
+                    )
+                    self._set_top_step_widget(step_name, placeholder)
+                    continue
+
             module_path = chip_dir / file_name
-            load_result = create_visual_widget_from_py(module_path, self.current_target_folder)
+            target_folder = str(step_folder) if step_folder is not None else self.current_target_folder
+            load_result = create_visual_widget_from_py(module_path, target_folder)
             self._set_top_step_widget(step_name, load_result.widget)
 
     def _output_file_name_by_step(self, step_name):
@@ -729,15 +836,15 @@ class MainWindow(QMainWindow):
     def _show_step_output_in_right_panel(self, step_name, folder_path: Path):
         file_name = self._output_file_name_by_step(step_name)
         if not file_name:
-            self.file_path_label.setText("路径: (当前步骤无对应输出文件)")
-            self.file_content_edit.clear()
+            self._set_file_path_label("路径: (当前步骤无对应输出文件)")
+            self._clear_editor_text()
             self.current_edit_file = None
             return
 
         file_path = folder_path / file_name
         if not file_path.exists() or not file_path.is_file():
-            self.file_path_label.setText(f"路径: {file_path} (未生成)")
-            self.file_content_edit.clear()
+            self._set_file_path_label(f"路径: {file_path} (未生成)")
+            self._clear_editor_text()
             self.current_edit_file = None
             return
 
@@ -746,20 +853,38 @@ class MainWindow(QMainWindow):
         except UnicodeDecodeError:
             content = file_path.read_text(encoding="gbk", errors="replace")
 
-        self.file_path_label.setText(f"路径: {file_path}")
-        self.file_content_edit.setPlainText(content)
-        self.file_content_edit.add_tokens_from_text(content)
+        self._set_file_path_label(f"路径: {file_path}")
+        self._set_editor_text(content, mark_dirty=False)
         self.current_edit_file = file_path
         self._apply_editor_language_by_path(file_path)
 
     def _refresh_outputs_and_status(self, folder_path: Path):
-        if not folder_path.exists() or not folder_path.is_dir():
+        step_file_map = {step_name: self._output_file_name_by_step(step_name) for step_name in self.timeline_widget.step_names}
+        step_path_map = {}
+        for step_name in self.timeline_widget.step_names:
+            resolved_folder = self._folder_for_step(step_name, folder_path)
+            if resolved_folder is not None:
+                step_path_map[step_name] = resolved_folder
+
+        self.timeline_widget.refresh_status_by_step_paths(step_path_map, step_file_map)
+
+        selected_step = self.timeline_widget.step_name(self.timeline_widget.selected_index)
+        selected_folder = self._folder_for_step(selected_step, folder_path)
+        if selected_folder is None:
+            self._set_file_path_label("路径: (未选择目标文件夹)")
+            self._clear_editor_text()
+            self.current_edit_file = None
+            self._refresh_all_block_lists()
             return
 
-        existing = self._collect_existing_outputs(folder_path)
-        self._apply_timeline_status_from_outputs(existing)
-        selected_step = self.timeline_widget.step_name(self.timeline_widget.selected_index)
-        self._show_step_output_in_right_panel(selected_step, folder_path)
+        if not selected_folder.exists() or not selected_folder.is_dir():
+            self._set_file_path_label(f"路径: {selected_folder} (目录不存在)")
+            self._clear_editor_text()
+            self.current_edit_file = None
+            self._refresh_all_block_lists()
+            return
+
+        self._show_step_output_in_right_panel(selected_step, selected_folder)
         self._refresh_all_block_lists()
 
     def _wizard_target_folder(self, wizard: QWizard):
@@ -781,6 +906,8 @@ class MainWindow(QMainWindow):
             return
 
         self.current_target_folder = target_folder
+        self.step_target_folders[step_name] = target_folder
+        self._save_project_json()
         self._refresh_outputs_and_status(Path(target_folder))
         self.statusBar().showMessage(f"步骤 {step_name} 已完成，已刷新输出", 2500)
 
@@ -857,12 +984,53 @@ class MainWindow(QMainWindow):
             self.bottom_stack.addWidget(page)
 
     def _default_insert_target_file(self, step_name: str):
-        if not self.current_target_folder:
+        folder_path = self._folder_for_step(step_name)
+        if folder_path is None:
             return None
         file_name = self._output_file_name_by_step(step_name)
         if not file_name:
             return None
-        return Path(self.current_target_folder) / file_name
+        return folder_path / file_name
+
+    def _folder_for_step(self, step_name: str, fallback_folder=None):
+        step_folder = self.step_target_folders.get(step_name, "")
+        if str(step_folder).strip():
+            return Path(step_folder)
+        if self.current_target_folder:
+            return Path(self.current_target_folder)
+        if fallback_folder:
+            return Path(fallback_folder)
+        return None
+
+    def _step_folders_for_json(self):
+        return {
+            step_name: str(path)
+            for step_name, path in self.step_target_folders.items()
+            if step_name in self.timeline_widget.step_names and str(path).strip()
+        }
+
+    def _save_project_json(self):
+        if self.current_config_json_path is None:
+            return
+
+        payload = {}
+        if self.current_config_json_path.exists() and self.current_config_json_path.is_file():
+            try:
+                payload = json.loads(self.current_config_json_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                payload = {}
+
+        payload["file_name"] = payload.get("file_name") or self.current_config_json_path.name
+        payload["folder"] = self.current_target_folder or payload.get("folder", "")
+        payload["controller"] = self.current_controller or payload.get("controller", "")
+        payload["chip"] = self.current_chip or payload.get("chip", "")
+        payload["step_folders"] = self._step_folders_for_json()
+        payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+        try:
+            self.current_config_json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            self.statusBar().showMessage("JSON 更新失败", 3000)
 
     def _refresh_all_block_lists(self):
         for step_name in self.bottom_page_meta.keys():
@@ -934,52 +1102,67 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("请先在右侧 IDE 打开目标文件并定位光标", 3000)
             return
 
+        editor_has_active_file = self.current_edit_file is not None and Path(self.current_edit_file) == active_file
+        working_text = self.file_content_edit.toPlainText() if editor_has_active_file else ""
+        if not editor_has_active_file:
+            try:
+                if active_file.exists():
+                    working_text = active_file.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                working_text = active_file.read_text(encoding="gbk", errors="replace")
+            except OSError:
+                self.statusBar().showMessage("读取目标文件失败，已停止插入", 3500)
+                return
+
         self._apply_editor_language_by_path(active_file)
         selected_language = self._detect_language_from_file(active_file)
 
-        target_folder = Path(self.current_target_folder) if self.current_target_folder else active_file.parent
-        preview_result = self.block_library_manager.preview_missing_definitions_for_language(
+        preview_result = self.block_library_manager.preview_missing_definitions_in_text_for_language(
             block,
-            target_folder,
-            active_file,
+            working_text,
             selected_language,
+            active_file,
         )
         if not preview_result.get("ok"):
             self.statusBar().showMessage(str(preview_result.get("message", "预览检查失败")), 3000)
             return
 
-        if not self._confirm_block_insert(block, active_file, preview_result, code_template):
+        confirm_result = self._confirm_block_insert(
+            block,
+            active_file,
+            preview_result,
+            code_template,
+            working_text,
+            selected_language,
+        )
+        if not confirm_result:
             self.statusBar().showMessage("已取消插入", 2000)
+            return
+
+        insert_draft = confirm_result.get("insert_draft", {}) if isinstance(confirm_result.get("insert_draft", {}), dict) else {}
+        code_template = str(insert_draft.get("snippet", ""))
+        if not code_template.strip():
+            self.statusBar().showMessage("程序块代码为空，未执行插入", 2500)
             return
 
         requested_insert_pos = self.editor_insert_position
 
-        defs_result = self.block_library_manager.ensure_variable_definitions_for_language(
-            block,
-            target_folder,
-            active_file,
-            selected_language,
-        )
-        if not defs_result.get("ok"):
-            self.statusBar().showMessage(str(defs_result.get("message", "变量定义检查失败")), 3000)
-            return
+        missing_definitions = list(insert_draft.get("missing_definitions", []))
+        region = preview_result.get("region")
+        if missing_definitions and region is not None:
+            original_text = working_text
+            _, end_pos = region
+            insertion_line_pos = original_text.rfind("\n", 0, end_pos) + 1
+            working_text = self.block_library_manager._insert_declarations_into_region(original_text, region, missing_definitions)
+            if insertion_line_pos <= requested_insert_pos:
+                requested_insert_pos += len(working_text) - len(original_text)
 
-        file_text = ""
-        try:
-            if active_file.exists():
-                file_text = active_file.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            file_text = active_file.read_text(encoding="gbk", errors="replace")
-        except OSError:
-            self.statusBar().showMessage("读取最新文件内容失败，已停止插入", 3500)
-            return
-
-        self.file_content_edit.setPlainText(file_text)
+        self._set_editor_text(working_text, mark_dirty=False)
 
         cursor = self.file_content_edit.textCursor()
         insert_pos = max(0, min(requested_insert_pos, len(self.file_content_edit.toPlainText())))
         cursor.setPosition(insert_pos)
-        snippet = code_template
+        snippet = self._apply_cursor_indent_to_snippet(code_template, cursor)
         if snippet and not snippet.endswith("\n"):
             snippet += "\n"
         cursor.insertText(snippet)
@@ -987,24 +1170,26 @@ class MainWindow(QMainWindow):
         self.file_content_edit.add_tokens_from_text(snippet)
 
         self.current_edit_file = active_file
-        try:
-            active_file.parent.mkdir(parents=True, exist_ok=True)
-            active_file.write_text(self.file_content_edit.toPlainText(), encoding="utf-8")
-        except OSError:
-            self.statusBar().showMessage("程序块已插入编辑器，但写入文件失败", 3500)
-            return
 
-        self.file_path_label.setText(f"路径: {active_file}")
+        self._set_file_path_label(f"路径: {active_file}")
         self._apply_editor_language_by_path(active_file)
         self._on_editor_cursor_position_changed()
-        self.statusBar().showMessage("程序块已插入到 IDE 指定位置，并同步写入文件", 3000)
+        self.statusBar().showMessage("程序块已插入到 IDE 指定位置（未自动保存）", 3000)
         return
 
-    def _confirm_block_insert(self, block, active_file: Path, preview_result, code_template: str):
+    def _confirm_block_insert(
+        self,
+        block,
+        active_file: Path,
+        preview_result,
+        code_template: str,
+        working_text: str,
+        selected_language: str,
+    ):
         dialog = QDialog(self)
         dialog.setWindowTitle("程序块插入预览")
         dialog.setModal(True)
-        dialog.resize(760, 560)
+        dialog.resize(860, 700)
 
         layout = QVBoxLayout(dialog)
 
@@ -1016,19 +1201,110 @@ class MainWindow(QMainWindow):
         def_file = preview_result.get("definition_file", "")
         defs_title = QLabel(f"变量定义检查文件: {def_file}", dialog)
 
-        missing_defs = preview_result.get("missing_definitions", [])
+        variable_items = block.get("variables", []) if isinstance(block.get("variables", []), list) else []
+        variable_names = []
+        for item in variable_items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name:
+                variable_names.append(name)
+
+        rename_tip = QLabel("变量改名: 直接在下表“新变量名”列中修改", dialog)
+
+        rename_table = QTableWidget(dialog)
+        rename_table.setColumnCount(2)
+        rename_table.setHorizontalHeaderLabels(["原变量名", "新变量名"])
+        rename_table.setRowCount(len(variable_names))
+        rename_table.verticalHeader().setVisible(False)
+        rename_table.setAlternatingRowColors(True)
+        rename_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        rename_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        rename_table.horizontalHeader().setStretchLastSection(True)
+        rename_table.setMaximumHeight(190)
+
+        for row, name in enumerate(variable_names):
+            old_item = QTableWidgetItem(name)
+            old_item.setFlags(old_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            rename_table.setItem(row, 0, old_item)
+            new_name_editor = QLineEdit(name, rename_table)
+            new_name_editor.textChanged.connect(lambda _text, _row=row: refresh_preview_texts())
+            rename_table.setCellWidget(row, 1, new_name_editor)
+
         defs_editor = QPlainTextEdit(dialog)
         defs_editor.setReadOnly(True)
-        if missing_defs:
-            defs_editor.setPlainText("\n".join(missing_defs))
-        else:
-            defs_editor.setPlainText("(无缺失变量定义)")
         defs_editor.setMaximumHeight(140)
 
         code_title = QLabel("即将插入的程序块代码:", dialog)
         code_editor = QPlainTextEdit(dialog)
         code_editor.setReadOnly(True)
-        code_editor.setPlainText(code_template)
+        state = {
+            "insert_draft": {
+                "snippet": code_template,
+                "missing_definitions": list(preview_result.get("missing_definitions", [])),
+            },
+            "valid": True,
+        }
+        ok_button = None
+
+        def build_rename_map():
+            rename_map = {}
+            for row, old_name in enumerate(variable_names):
+                new_editor = rename_table.cellWidget(row, 1)
+                new_name = ""
+                if isinstance(new_editor, QLineEdit):
+                    new_name = new_editor.text().strip()
+                rename_map[old_name] = new_name or old_name
+            return rename_map
+
+        def refresh_preview_texts():
+            rename_map = build_rename_map()
+
+            remapped_variables = []
+            for item in variable_items:
+                if not isinstance(item, dict):
+                    continue
+                mapped_item = dict(item)
+                old_name = str(item.get("name", "")).strip()
+                if old_name:
+                    mapped_item["name"] = rename_map.get(old_name, old_name)
+                if str(mapped_item.get("definition", "")).strip():
+                    mapped_item["definition"] = self._apply_variable_renames(str(mapped_item.get("definition", "")), rename_map)
+                if str(mapped_item.get("declaration", "")).strip():
+                    mapped_item["declaration"] = self._apply_variable_renames(str(mapped_item.get("declaration", "")), rename_map)
+                remapped_variables.append(mapped_item)
+
+            remapped_block = dict(block)
+            remapped_block["variables"] = remapped_variables
+
+            recheck = self.block_library_manager.preview_missing_definitions_in_text_for_language(
+                remapped_block,
+                working_text,
+                selected_language,
+                active_file,
+            )
+
+            draft = state["insert_draft"]
+            draft["snippet"] = self._apply_variable_renames(code_template, rename_map)
+            if recheck.get("ok"):
+                draft["missing_definitions"] = list(recheck.get("missing_definitions", []))
+                state["valid"] = True
+            else:
+                draft["missing_definitions"] = []
+                state["valid"] = False
+
+            code_editor.setPlainText(str(draft.get("snippet", "")))
+            missing_defs = list(draft.get("missing_definitions", []))
+            if missing_defs:
+                defs_editor.setPlainText("\n".join(missing_defs))
+            elif state.get("valid", True):
+                defs_editor.setPlainText("(无缺失变量定义)")
+            else:
+                defs_editor.setPlainText(str(recheck.get("message", "声明区检查失败")))
+            if ok_button is not None:
+                ok_button.setEnabled(bool(state.get("valid", True)))
+
+        refresh_preview_texts()
 
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -1041,20 +1317,72 @@ class MainWindow(QMainWindow):
         cancel_button = button_box.button(QDialogButtonBox.StandardButton.Cancel)
         if cancel_button is not None:
             cancel_button.setText("取消")
-        button_box.accepted.connect(dialog.accept)
+
+        def on_accept_clicked():
+            rename_table.clearFocus()
+            dialog.setFocus()
+            refresh_preview_texts()
+            if not state.get("valid", True):
+                return
+            dialog.accept()
+
+        button_box.accepted.connect(on_accept_clicked)
         button_box.rejected.connect(dialog.reject)
 
         layout.addWidget(header)
         layout.addWidget(target_label)
         layout.addWidget(cursor_label)
         layout.addSpacing(4)
+        layout.addWidget(rename_tip)
+        layout.addWidget(rename_table)
         layout.addWidget(defs_title)
         layout.addWidget(defs_editor)
         layout.addWidget(code_title)
         layout.addWidget(code_editor, 1)
         layout.addWidget(button_box)
 
-        return dialog.exec() == int(QDialog.DialogCode.Accepted)
+        refresh_preview_texts()
+
+        if dialog.exec() != int(QDialog.DialogCode.Accepted):
+            return None
+        return {
+            "insert_draft": state.get("insert_draft", {"snippet": code_template, "missing_definitions": []}),
+        }
+
+    def _apply_variable_renames(self, text: str, rename_map: dict[str, str]):
+        result = text or ""
+        if not rename_map:
+            return result
+
+        # Replace longer names first to avoid partial overlaps when identifiers share prefixes.
+        ordered_names = sorted(rename_map.keys(), key=len, reverse=True)
+        for old_name in ordered_names:
+            new_name = str(rename_map.get(old_name, old_name)).strip() or old_name
+            if old_name == new_name:
+                continue
+            result = re.sub(rf"\b{re.escape(old_name)}\b", new_name, result)
+        return result
+
+    def _apply_cursor_indent_to_snippet(self, snippet: str, cursor):
+        text = snippet or ""
+        if not text:
+            return text
+
+        line_prefix = cursor.block().text()[: cursor.positionInBlock()]
+        indent_match = re.match(r"[ \t]*", line_prefix)
+        indent = indent_match.group(0) if indent_match is not None else ""
+        if not indent:
+            return text
+
+        has_trailing_newline = text.endswith("\n")
+        lines = text.splitlines()
+        if not lines:
+            return text
+
+        indented_text = "\n".join(f"{indent}{line}" for line in lines)
+        if has_trailing_newline:
+            indented_text += "\n"
+        return indented_text
 
     def _switch_middle_pages(self, index):
         if not self.timeline_widget.step_names:
@@ -1077,6 +1405,7 @@ class MainWindow(QMainWindow):
         self.current_controller = selected["controller"]
         self.current_chip = selected["chip"]
         self.current_target_folder = folder
+        self.step_target_folders = {}
 
         controller = self.current_controller or "(未选择控制器类型)"
         chip = self.current_chip or "(未选择芯片类型)"
@@ -1102,6 +1431,7 @@ class MainWindow(QMainWindow):
             "folder": str(folder_path),
             "controller": controller,
             "chip": chip,
+            "step_folders": self._step_folders_for_json(),
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -1112,13 +1442,15 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("JSON 文件写入失败", 3500)
             return
 
+        self.current_config_json_path = output_path
+
         # Reset timeline state for a newly created file.
         self.timeline_widget.reset_after_file_created()
         self._reload_top_visual_pages()
         self._switch_middle_pages(self.timeline_widget.selected_index)
 
-        self.file_path_label.setText(f"路径: {output_path}")
-        self.file_content_edit.setPlainText(
+        self._set_file_path_label(f"路径: {output_path}")
+        self._set_editor_text(
             "\n".join(
                 [
                     "# 已生成 JSON 配置",
@@ -1128,9 +1460,9 @@ class MainWindow(QMainWindow):
                     f"chip={chip}",
                     f"folder={folder_path}",
                 ]
-            )
+            ),
+            mark_dirty=False,
         )
-        self.file_content_edit.add_tokens_from_text(self.file_content_edit.toPlainText())
         self.current_edit_file = output_path
         self._apply_editor_language_by_path(output_path)
         self._refresh_outputs_and_status(folder_path)
@@ -1150,11 +1482,12 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("文件打开失败", 3000)
             return
 
-        self.file_path_label.setText(f"路径: {file_path}")
-        self.file_content_edit.setPlainText(content)
-        self.file_content_edit.add_tokens_from_text(content)
+        self._set_file_path_label(f"路径: {file_path}")
+        self._set_editor_text(content, mark_dirty=False)
         self.current_edit_file = Path(file_path)
         self._apply_editor_language_by_path(Path(file_path))
+        self.current_config_json_path = None
+        self.step_target_folders = {}
 
         selected_folder = Path(file_path).parent
         if Path(file_path).suffix.lower() == ".json":
@@ -1163,6 +1496,7 @@ class MainWindow(QMainWindow):
                 folder = payload.get("folder", "")
                 controller = payload.get("controller", "")
                 chip = payload.get("chip", "")
+                step_folders = payload.get("step_folders", {})
 
                 if folder:
                     selected_folder = Path(folder)
@@ -1171,8 +1505,15 @@ class MainWindow(QMainWindow):
                     self.current_controller = controller
                 if chip:
                     self.current_chip = chip
+                if isinstance(step_folders, dict):
+                    self.step_target_folders = {
+                        step_name: str(path)
+                        for step_name, path in step_folders.items()
+                        if step_name in self.timeline_widget.step_names and str(path).strip()
+                    }
                 if controller or chip:
                     self._reload_top_visual_pages()
+                self.current_config_json_path = Path(file_path)
             except json.JSONDecodeError:
                 pass
 
@@ -1181,12 +1522,27 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("文件读取成功", 2000)
 
     def on_dot_selected(self, index):
+        if index != self._active_step_index:
+            if not self._prompt_save_if_dirty("切换步骤"):
+                if 0 <= self._active_step_index < len(self.timeline_widget.step_names):
+                    self.timeline_widget.selected_index = self._active_step_index
+                    self.timeline_widget.update()
+                return
+
         step_name = self.timeline_widget.step_name(index)
         self._switch_middle_pages(index)
-        if self.current_target_folder:
-            self._show_step_output_in_right_panel(step_name, Path(self.current_target_folder))
+        selected_folder = self._folder_for_step(step_name)
+        if selected_folder is not None:
+            self._show_step_output_in_right_panel(step_name, selected_folder)
         else:
-            self.file_path_label.setText("路径: (未选择目标文件夹)")
-            self.file_content_edit.clear()
+            self._set_file_path_label("路径: (未选择目标文件夹)")
+            self._clear_editor_text()
             self.current_edit_file = None
+        self._active_step_index = index
         self.statusBar().showMessage(f"已选中步骤: {step_name}", 2000)
+
+    def closeEvent(self, event):
+        if not self._prompt_save_if_dirty("退出"):
+            event.ignore()
+            return
+        event.accept()
