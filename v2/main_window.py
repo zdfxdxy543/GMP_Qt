@@ -3,13 +3,14 @@ import re
 from pathlib import Path
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import QEvent, QPoint, QTimer, Qt, QSize
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLineEdit,
@@ -38,6 +39,31 @@ from widgets.code_editor import CodeEditor
 from widgets.block_library_manager import BlockLibraryManager
 from widgets.source_ui_loader import create_visual_widget_from_py
 from widgets.timeline_widget import TimelineWidget
+
+
+class _BlockPreviewPopup(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.ToolTip)
+        self.setObjectName("blockPreviewPopup")
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setMinimumSize(420, 260)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+
+        self.title_label = QLabel("程序块预览", self)
+        self.title_label.setStyleSheet("font-weight: 600;")
+
+        self.preview_edit = QPlainTextEdit(self)
+        self.preview_edit.setReadOnly(True)
+
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.preview_edit, 1)
+
+    def set_preview(self, title: str, text: str):
+        self.title_label.setText(title)
+        self.preview_edit.setPlainText(text)
 
 
 class MainWindow(QMainWindow):
@@ -76,6 +102,10 @@ class MainWindow(QMainWindow):
         self._editor_baseline_text = ""
         self._suspend_dirty_tracking = False
         self._active_step_index = -1
+        self.block_preview_popup = None
+        self.block_hover_timer = None
+        self.pending_hover_preview = None
+        self.block_list_viewports = {}
 
         self.step_py_map = {
             "ctrl_settings": "ctrl_settings_setup.py",
@@ -90,11 +120,101 @@ class MainWindow(QMainWindow):
         self._setup_central_ui()
         self._apply_window_theme(self.current_theme)
         self._setup_global_status_widgets()
+        self._setup_block_preview_support()
         self.statusBar().showMessage("就绪")
 
     def _setup_global_status_widgets(self):
         self.global_position_label = QLabel("插入位置: 第 1 行, 第 1 列", self)
         self.statusBar().addPermanentWidget(self.global_position_label)
+
+    def _setup_block_preview_support(self):
+        self.block_preview_popup = _BlockPreviewPopup(self)
+        self.block_hover_timer = QTimer(self)
+        self.block_hover_timer.setSingleShot(True)
+        self.block_hover_timer.setInterval(450)
+        self.block_hover_timer.timeout.connect(self._show_pending_block_preview)
+
+    def _hide_block_preview(self):
+        if self.block_hover_timer is not None:
+            self.block_hover_timer.stop()
+        self.pending_hover_preview = None
+        if self.block_preview_popup is not None:
+            self.block_preview_popup.hide()
+
+    def _schedule_block_preview(self, step_name: str, list_widget: QListWidget, item: QListWidgetItem | None):
+        self._hide_block_preview()
+        if item is None:
+            return
+
+        block_id = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        if not block_id:
+            return
+
+        item_rect = list_widget.visualItemRect(item)
+        global_pos = list_widget.viewport().mapToGlobal(item_rect.bottomRight() + QPoint(12, 8))
+        self.pending_hover_preview = {
+            "step_name": step_name,
+            "block_id": block_id,
+            "global_pos": global_pos,
+        }
+        self.block_hover_timer.start()
+
+    def _build_block_preview_text(self, step_name: str, block: dict):
+        code_template = str(block.get("code_template", "")).rstrip()
+        active_file = Path(self.current_edit_file) if self.current_edit_file else self._default_insert_target_file(step_name)
+        if active_file is None:
+            return code_template or "(无程序块代码)"
+
+        target_folder = Path(self.current_target_folder) if self.current_target_folder else active_file.parent
+        selected_language = self._detect_language_from_file(active_file)
+        preview_result = self.block_library_manager.preview_missing_definitions_for_language(
+            block,
+            target_folder,
+            active_file,
+            selected_language,
+        )
+
+        sections = []
+        if not preview_result.get("ok"):
+            sections.append(str(preview_result.get("message", "预览检查失败")))
+        else:
+            missing_definitions = preview_result.get("missing_definitions", [])
+            if missing_definitions:
+                sections.append("[将补齐的变量声明]\n" + "\n".join(missing_definitions))
+            else:
+                sections.append("[变量声明]\n(无新增声明)")
+
+        sections.append("[将插入的程序块]\n" + (code_template or "(无程序块代码)"))
+        return "\n\n".join(sections)
+
+    def _show_pending_block_preview(self):
+        if not self.pending_hover_preview or self.block_preview_popup is None:
+            return
+
+        step_name = self.pending_hover_preview.get("step_name", "")
+        block_id = self.pending_hover_preview.get("block_id", "")
+        global_pos = self.pending_hover_preview.get("global_pos", QPoint(0, 0))
+        block = self.block_library_manager.get_block(block_id)
+        if not block:
+            return
+
+        block_name = str(block.get("name", block_id))
+        preview_text = self._build_block_preview_text(step_name, block)
+        self.block_preview_popup.set_preview(f"程序块预览 - {block_name}", preview_text)
+        self.block_preview_popup.adjustSize()
+        self.block_preview_popup.move(global_pos)
+        self.block_preview_popup.show()
+
+    def eventFilter(self, watched, event):
+        step_name = self.block_list_viewports.get(watched)
+        if step_name is not None:
+            if event.type() == QEvent.Type.Leave:
+                self._hide_block_preview()
+            elif event.type() == QEvent.Type.MouseMove:
+                list_widget = self.bottom_page_meta.get(step_name, {}).get("block_list")
+                if list_widget is not None and list_widget.itemAt(event.position().toPoint()) is None:
+                    self._hide_block_preview()
+        return super().eventFilter(watched, event)
 
     def _light_theme_stylesheet(self):
         return """
@@ -950,6 +1070,9 @@ class MainWindow(QMainWindow):
 
             block_list = QListWidget(page)
             block_list.setObjectName(f"blockList_{step_name}")
+            block_list.setMouseTracking(True)
+            block_list.viewport().setMouseTracking(True)
+            block_list.setProperty("stepName", step_name)
 
             insert_button = QPushButton("插入所选程序块", page)
             insert_button.setEnabled(False)
@@ -973,10 +1096,13 @@ class MainWindow(QMainWindow):
                 "block_list": block_list,
                 "insert_button": insert_button,
             }
+            self.block_list_viewports[block_list.viewport()] = step_name
+            block_list.viewport().installEventFilter(self)
 
             search_input.textChanged.connect(lambda _, step=step_name: self._refresh_block_list_for_step(step))
             library_combo.currentIndexChanged.connect(lambda _, step=step_name: self._refresh_block_list_for_step(step))
             block_list.itemSelectionChanged.connect(lambda step=step_name: self._on_block_selection_changed(step))
+            block_list.itemEntered.connect(lambda item, step=step_name, lst=block_list: self._schedule_block_preview(step, lst, item))
             insert_button.clicked.connect(lambda _, step=step_name: self._insert_selected_block(step))
 
             self._refresh_block_list_for_step(step_name)
@@ -1040,6 +1166,8 @@ class MainWindow(QMainWindow):
         meta = self.bottom_page_meta.get(step_name)
         if not meta:
             return
+
+        self._hide_block_preview()
 
         search_input = meta["search_input"]
         library_combo = meta["library_combo"]
@@ -1391,6 +1519,7 @@ class MainWindow(QMainWindow):
         if index < 0 or index >= len(self.timeline_widget.step_names):
             index = 0
 
+        self._hide_block_preview()
         self.top_stack.setCurrentIndex(index)
         self.bottom_stack.setCurrentIndex(index)
 

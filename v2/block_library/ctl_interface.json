@@ -1,0 +1,116 @@
+{
+  "blocks": [
+    {
+      "id": "set_phase_voltage_adc",
+      "name": "设置三相ADC",
+      "library": "外设控制库",
+      "language": "c",
+      "variables": [
+        {
+          "name": "uuvw_src",
+          "definition": "extern adc_gt uuvw_src[3];"
+        }
+      ],
+      "code_template": "uuvw_src[phase_U] = ADC_readResult(INV_UU_RESULT_BASE, INV_UU);\nuuvw_src[phase_V] = ADC_readResult(INV_UV_RESULT_BASE, INV_UV);\nuuvw_src[phase_W] = ADC_readResult(INV_UW_RESULT_BASE, INV_UW);"
+    },
+    {
+      "id": "set_dc_voltage_adc",
+      "name": "设置直流ADC",
+      "library": "外设控制库",
+      "language": "c",
+      "variables": [
+        {
+          "name": "udc_src",
+          "definition": "extern adc_gt udc_src;"
+        }
+      ],
+      "code_template": "udc_src = ADC_readResult(INV_VBUS_RESULT_BASE, INV_VBUS);"
+    },
+    {
+      "id": "set_autorun_encoder",
+      "name": "设置位置编码器",
+      "library": "外设控制库",
+      "language": "c",
+      "variables": [
+        {
+          "name": "pos_enc",
+          "definition": "pos_autoturn_encoder_t pos_enc;"
+        }
+      ],
+      "code_template": "ctl_step_autoturn_pos_encoder(&pos_enc, EQEP_getPosition(EQEP_Encoder_BASE));"
+    },
+    {
+      "id": "ADC_invoke",
+      "name": "ADC读取",
+      "library": "外设控制库",
+      "language": "c",
+      "variables": [
+        {
+          "name": "iuvw",
+          "definition": "tri_ptr_adc_channel_t iuvw;"
+        },
+        {
+          "name": "uuvw",
+          "definition": "tri_ptr_adc_channel_t uuvw;"
+        },
+        {
+          "name": "idc",
+          "definition": "ptr_adc_channel_t idc;"
+        },
+        {
+          "name": "udc",
+          "definition": "ptr_adc_channel_t udc;"
+        }
+      ],
+      "code_template": "ctl_step_tri_ptr_adc_channel(&iuvw);\nctl_step_tri_ptr_adc_channel(&uuvw);\nctl_step_ptr_adc_channel(&idc);\nctl_step_ptr_adc_channel(&udc);"
+    },
+    {
+      "id": "epwm_peripheral",
+      "name": "EPWM外设",
+      "library": "外设控制库",
+      "language": "c",
+      "variables": [
+        {
+          "name": "spwm",
+          "definition": "// modulator: SPWM modulator / SVPWM modulator / NPC modulator\n#if defined USING_NPC_MODULATOR\nnpc_modulator_t spwm;\n#else\nspwm_modulator_t spwm;\n#endif // USING_NPC_MODULATOR"
+        }
+      ],
+      "code_template": "EPWM_setCounterCompareValue(PHASE_U_BASE, EPWM_COUNTER_COMPARE_A, spwm.pwm_out[phase_U]);\nEPWM_setCounterCompareValue(PHASE_V_BASE, EPWM_COUNTER_COMPARE_A, spwm.pwm_out[phase_V]);\nEPWM_setCounterCompareValue(PHASE_W_BASE, EPWM_COUNTER_COMPARE_A, spwm.pwm_out[phase_W]);"
+    },
+    {
+      "id": "dac_value",
+      "name": "DAC输出",
+      "library": "外设控制库",
+      "language": "c",
+      "variables": [
+        {
+          "name": "spwm",
+          "definition": "// modulator: SPWM modulator / SVPWM modulator / NPC modulator\n#if defined USING_NPC_MODULATOR\nnpc_modulator_t spwm;\n#else\nspwm_modulator_t spwm;\n#endif // USING_NPC_MODULATOR"
+        },
+        {
+          "name": "mtr_ctrl",
+          "definition": "mtr_current_ctrl_t mtr_ctrl;"
+        }
+      ],
+      "code_template": "DAC_setShadowValue(IRIS_DACA_BASE, spwm.vabc_out.dat[phase_U] * 2048 + 2048);\nDAC_setShadowValue(IRIS_DACB_BASE, mtr_ctrl.iab0.dat[phase_alpha] * 2048 + 2048);"
+    },
+    {
+      "id": "clear_tip_zone_flag",
+      "name": "清除死区标志",
+      "library": "外设控制库",
+      "language": "c",
+      "variables": [
+      ],
+      "code_template": "EPWM_clearTripZoneFlag(PHASE_U_BASE, EPWM_TZ_FORCE_EVENT_OST);\nEPWM_clearTripZoneFlag(PHASE_V_BASE, EPWM_TZ_FORCE_EVENT_OST);\nEPWM_clearTripZoneFlag(PHASE_W_BASE, EPWM_TZ_FORCE_EVENT_OST);\n\nclear_all_controllers();\nGPIO_WritePin(PWM_ENABLE_PORT, 1);\n\nGPIO_WritePin(CONTROLLER_LED, 0);"
+    },
+    {
+      "id": "pwm_disable",
+      "name": "禁止PWM",
+      "library": "外设控制库",
+      "language": "c",
+      "variables": [
+      ],
+      "code_template": "EPWM_forceTripZoneEvent(PHASE_U_BASE, EPWM_TZ_FORCE_EVENT_OST);\nEPWM_forceTripZoneEvent(PHASE_V_BASE, EPWM_TZ_FORCE_EVENT_OST);\nEPWM_forceTripZoneEvent(PHASE_W_BASE, EPWM_TZ_FORCE_EVENT_OST);\n\n// PWM disable\nGPIO_WritePin(PWM_ENABLE_PORT, 0);\n\nGPIO_WritePin(CONTROLLER_LED, 1);"
+    }
+]
+}
