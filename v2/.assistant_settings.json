@@ -1,0 +1,6 @@
+{
+  "api_key": "sk-rhtilxdcrglqhoqlzipmdqfktgikrnubnbkgbwtscukzgqwr",
+  "model": "Qwen/Qwen2.5-7B-Instruct",
+  "api_url": "https://api.siliconflow.cn/v1/chat/completions",
+  "updated_at": "2026-03-12T17:37:02"
+}

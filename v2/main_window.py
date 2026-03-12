@@ -1,11 +1,15 @@
 import json
+import os
 import re
+import urllib.error
+import urllib.request
 from pathlib import Path
 from datetime import datetime
 
-from PyQt6.QtCore import QEvent, QPoint, QTimer, Qt, QSize
+from PyQt6.QtCore import QEvent, QObject, QPoint, QThread, QTimer, Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -66,6 +70,276 @@ class _BlockPreviewPopup(QFrame):
         self.preview_edit.setPlainText(text)
 
 
+class _AssistantApiWorker(QObject):
+    finished = pyqtSignal(dict)
+
+    def __init__(
+        self,
+        api_key: str,
+        model_name: str,
+        api_url: str,
+        question: str,
+        context: dict,
+        candidate_blocks: list[dict],
+    ):
+        super().__init__()
+        self.api_key = api_key
+        self.model_name = model_name
+        self.api_url = api_url
+        self.question = question
+        self.context = context
+        self.candidate_blocks = candidate_blocks
+
+    def run(self):
+        if not self.api_key.strip():
+            self.finished.emit({"ok": False, "error": "未配置 SILICONFLOW_API_KEY"})
+            return
+
+        endpoint = self.api_url.strip() or "https://api.siliconflow.cn/v1/chat/completions"
+        context_brief = {
+            "controller": self.context.get("controller", ""),
+            "chip": self.context.get("chip", ""),
+            "step": self.context.get("step", ""),
+        }
+        prompt = {
+            "role": "user",
+            "content": (
+                "用户问题: "
+                + self.question
+                + "\n\n"
+                + "工程上下文: "
+                + json.dumps(context_brief, ensure_ascii=False)
+                + "\n\n"
+                + "候选程序块: "
+                + json.dumps(self.candidate_blocks, ensure_ascii=False)
+                + "\n\n"
+                + "请基于候选程序块回答，优先说明应该使用哪些程序块和大致步骤。"
+                + "如果候选不足，也要明确指出缺少哪些信息。"
+            ),
+        }
+
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "你是电机控制代码助手。回答要简洁，尽量给出可执行建议。",
+                },
+                prompt,
+            ],
+            "temperature": 0.2,
+            "max_tokens": 700,
+        }
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=35) as response:
+                response_text = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else str(exc)
+            self.finished.emit({"ok": False, "error": f"HTTP {exc.code}: {detail}"})
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.finished.emit({"ok": False, "error": str(exc)})
+            return
+
+        try:
+            data = json.loads(response_text)
+            content = str(data["choices"][0]["message"].get("content", "")).strip()
+        except (ValueError, KeyError, IndexError, TypeError):
+            self.finished.emit({"ok": False, "error": "模型返回格式无法解析"})
+            return
+
+        self.finished.emit({"ok": True, "answer": content})
+
+
+class _AssistantChatDialog(QDialog):
+    def __init__(self, context_provider, recommend_blocks, jump_to_block, api_config_provider, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("智能助手")
+        self.resize(620, 640)
+        self.context_provider = context_provider
+        self.recommend_blocks = recommend_blocks
+        self.jump_to_block = jump_to_block
+        self.api_config_provider = api_config_provider
+        self._active_thread = None
+        self._active_worker = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        title_label = QLabel("硅基流动智能助手", self)
+        title_label.setStyleSheet("font-size: 15px; font-weight: 600;")
+
+        tip_label = QLabel("支持本地程序块检索。若设置 SILICONFLOW_API_KEY，将自动调用硅基流动补充回答。", self)
+        tip_label.setWordWrap(True)
+
+        self.context_label = QLabel("上下文: -", self)
+        self.context_label.setWordWrap(True)
+
+        self.history_edit = QPlainTextEdit(self)
+        self.history_edit.setReadOnly(True)
+        self.history_edit.setPlaceholderText("对话记录将显示在这里")
+
+        rec_title = QLabel("推荐程序块", self)
+        rec_title.setStyleSheet("font-weight: 600;")
+
+        self.recommend_list = QListWidget(self)
+        self.recommend_list.setMinimumHeight(140)
+
+        rec_actions = QWidget(self)
+        rec_actions_layout = QHBoxLayout(rec_actions)
+        rec_actions_layout.setContentsMargins(0, 0, 0, 0)
+        rec_actions_layout.setSpacing(8)
+        self.jump_button = QPushButton("定位到推荐程序块", rec_actions)
+        rec_actions_layout.addStretch(1)
+        rec_actions_layout.addWidget(self.jump_button)
+
+        self.input_edit = QPlainTextEdit(self)
+        self.input_edit.setPlaceholderText("例如：我该如何实现 PID 控制？")
+        self.input_edit.setFixedHeight(96)
+
+        actions = QWidget(self)
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+
+        self.send_button = QPushButton("发送", actions)
+        self.close_button = QPushButton("关闭", actions)
+
+        actions_layout.addStretch(1)
+        actions_layout.addWidget(self.send_button)
+        actions_layout.addWidget(self.close_button)
+
+        layout.addWidget(title_label)
+        layout.addWidget(tip_label)
+        layout.addWidget(self.context_label)
+        layout.addWidget(self.history_edit, 1)
+        layout.addWidget(rec_title)
+        layout.addWidget(self.recommend_list)
+        layout.addWidget(rec_actions)
+        layout.addWidget(self.input_edit)
+        layout.addWidget(actions)
+
+        self.send_button.clicked.connect(self._handle_send)
+        self.close_button.clicked.connect(self.close)
+        self.jump_button.clicked.connect(self._handle_jump)
+        self.recommend_list.itemDoubleClicked.connect(lambda _item: self._handle_jump())
+
+    def _append_message(self, role: str, text: str):
+        if not text.strip():
+            return
+        current = self.history_edit.toPlainText().strip()
+        prefix = "\n\n" if current else ""
+        self.history_edit.setPlainText(f"{current}{prefix}{role}:\n{text.strip()}")
+        cursor = self.history_edit.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.history_edit.setTextCursor(cursor)
+
+    def _handle_send(self):
+        user_text = self.input_edit.toPlainText().strip()
+        if not user_text:
+            return
+
+        context = self.context_provider() if callable(self.context_provider) else {}
+        self._update_context_label(context)
+
+        self._append_message("你", user_text)
+        self.input_edit.clear()
+
+        candidates = self.recommend_blocks(user_text, context) if callable(self.recommend_blocks) else []
+        self._render_recommendations(candidates)
+
+        if candidates:
+            top_names = "、".join(item.get("name", item.get("id", "")) for item in candidates[:3])
+            local_answer = f"基于本地知识库，建议优先关注这些程序块: {top_names}。"
+        else:
+            local_answer = "本地知识库未检索到高相关程序块，请尝试补充关键词（如速度环、电流环、采样、PWM）。"
+        self._append_message("助手", local_answer)
+
+        api_config = self.api_config_provider() if callable(self.api_config_provider) else {}
+        api_key = str(api_config.get("api_key", "")).strip()
+        if not api_key:
+            self._append_message("助手", "未配置 API Key（首选项 -> API 设置），当前只提供本地推荐结果。")
+            return
+
+        if self._active_thread is not None:
+            self._append_message("助手", "上一条模型请求仍在处理中，请稍候。")
+            return
+
+        self.send_button.setEnabled(False)
+        self._append_message("助手", "正在请求硅基流动模型，请稍候...")
+
+        model_name = str(api_config.get("model", "")).strip() or "Qwen/Qwen2.5-7B-Instruct"
+        api_url = str(api_config.get("api_url", "")).strip() or "https://api.siliconflow.cn/v1/chat/completions"
+        self._active_worker = _AssistantApiWorker(api_key, model_name, api_url, user_text, context, candidates[:8])
+        self._active_thread = QThread(self)
+        self._active_worker.moveToThread(self._active_thread)
+        self._active_thread.started.connect(self._active_worker.run)
+        self._active_worker.finished.connect(self._on_model_reply)
+        self._active_worker.finished.connect(self._active_thread.quit)
+        self._active_worker.finished.connect(self._active_worker.deleteLater)
+        self._active_thread.finished.connect(self._active_thread.deleteLater)
+        self._active_thread.finished.connect(self._clear_active_request)
+        self._active_thread.start()
+
+    def _update_context_label(self, context: dict):
+        controller = str(context.get("controller", "-") or "-")
+        chip = str(context.get("chip", "-") or "-")
+        step = str(context.get("step", "-") or "-")
+        self.context_label.setText(f"上下文: controller={controller} | chip={chip} | step={step}")
+
+    def _render_recommendations(self, candidates: list[dict]):
+        self.recommend_list.clear()
+        for item in candidates:
+            block_id = str(item.get("id", "")).strip()
+            if not block_id:
+                continue
+            text = f"{item.get('name', block_id)}  [{item.get('library', '未分类')}]"
+            list_item = QListWidgetItem(text)
+            list_item.setData(Qt.ItemDataRole.UserRole, block_id)
+            reason = str(item.get("reason", "")).strip()
+            if reason:
+                list_item.setToolTip(reason)
+            self.recommend_list.addItem(list_item)
+
+        if self.recommend_list.count() > 0:
+            self.recommend_list.setCurrentRow(0)
+
+    def _handle_jump(self):
+        item = self.recommend_list.currentItem()
+        if item is None or not callable(self.jump_to_block):
+            return
+        block_id = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        if not block_id:
+            return
+        self.jump_to_block(block_id)
+
+    def _on_model_reply(self, result: dict):
+        if result.get("ok"):
+            answer = str(result.get("answer", "")).strip()
+            self._append_message("助手(模型)", answer or "模型未返回内容")
+        else:
+            self._append_message("助手", f"模型请求失败: {result.get('error', '未知错误')}")
+
+        self.send_button.setEnabled(True)
+
+    def _clear_active_request(self):
+        self._active_thread = None
+        self._active_worker = None
+
+
 class MainWindow(QMainWindow):
     """Main page containing toolbar, timeline, and file preview areas."""
 
@@ -106,6 +380,14 @@ class MainWindow(QMainWindow):
         self.block_hover_timer = None
         self.pending_hover_preview = None
         self.block_list_viewports = {}
+        self.middle_bottom_panel = None
+        self.assistant_fab = None
+        self.assistant_dialog = None
+        self.assistant_api_key = os.getenv("SILICONFLOW_API_KEY", "").strip()
+        self.assistant_model = os.getenv("SILICONFLOW_MODEL", "Qwen/Qwen2.5-7B-Instruct").strip()
+        self.assistant_api_url = os.getenv("SILICONFLOW_API_URL", "https://api.siliconflow.cn/v1/chat/completions").strip()
+
+        self._load_assistant_settings()
 
         self.step_py_map = {
             "ctrl_settings": "ctrl_settings_setup.py",
@@ -298,6 +580,21 @@ class MainWindow(QMainWindow):
                 background-color: #eef1f4;
                 border-color: #d8dee4;
             }
+            QPushButton[assistantFab="true"] {
+                background-color: #0f766e;
+                color: #ffffff;
+                border: 1px solid #0d5f58;
+                border-radius: 26px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton[assistantFab="true"]:hover {
+                background-color: #0d9488;
+                border-color: #0f766e;
+            }
+            QPushButton[assistantFab="true"]:pressed {
+                background-color: #0b6a63;
+            }
             QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QListView, QTreeView {
                 color: #1f2328;
             }
@@ -385,6 +682,21 @@ class MainWindow(QMainWindow):
                 background-color: #2a2f36;
                 border-color: #3f4652;
             }
+            QPushButton[assistantFab="true"] {
+                background-color: #15907f;
+                color: #ffffff;
+                border: 1px solid #1fb8a4;
+                border-radius: 26px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton[assistantFab="true"]:hover {
+                background-color: #1aa895;
+                border-color: #52ccb8;
+            }
+            QPushButton[assistantFab="true"]:pressed {
+                background-color: #13796b;
+            }
             QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QListView, QTreeView {
                 color: #d7dce2;
             }
@@ -424,10 +736,52 @@ class MainWindow(QMainWindow):
         if self.timeline_widget is not None and hasattr(self.timeline_widget, "set_theme"):
             self.timeline_widget.set_theme(self.current_theme)
 
+    def _assistant_settings_path(self):
+        return self._project_root() / "v2" / ".assistant_settings.json"
+
+    def _load_assistant_settings(self):
+        settings_path = self._assistant_settings_path()
+        if not settings_path.exists() or not settings_path.is_file():
+            return
+
+        try:
+            payload = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        self.assistant_api_key = str(payload.get("api_key", self.assistant_api_key) or "").strip()
+        self.assistant_model = str(payload.get("model", self.assistant_model) or "").strip()
+        self.assistant_api_url = str(payload.get("api_url", self.assistant_api_url) or "").strip()
+
+    def _save_assistant_settings(self):
+        settings_path = self._assistant_settings_path()
+        payload = {
+            "api_key": self.assistant_api_key,
+            "model": self.assistant_model,
+            "api_url": self.assistant_api_url,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        try:
+            settings_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            return True
+        except OSError:
+            return False
+
+    def _assistant_api_config(self):
+        return {
+            "api_key": self.assistant_api_key,
+            "model": self.assistant_model,
+            "api_url": self.assistant_api_url,
+        }
+
     def _open_preferences_dialog(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("首选项")
         dialog.setModal(True)
+        dialog.resize(560, 360)
 
         layout = QVBoxLayout(dialog)
         label = QLabel("主题", dialog)
@@ -439,6 +793,43 @@ class MainWindow(QMainWindow):
         if selected_index >= 0:
             theme_combo.setCurrentIndex(selected_index)
 
+        api_group = QGroupBox("硅基流动 API 设置", dialog)
+        api_layout = QVBoxLayout(api_group)
+        api_layout.setContentsMargins(10, 10, 10, 10)
+        api_layout.setSpacing(8)
+
+        api_key_label = QLabel("API Key", api_group)
+        api_key_input = QLineEdit(api_group)
+        api_key_input.setPlaceholderText("例如：sk-...")
+        api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        api_key_input.setText(self.assistant_api_key)
+
+        show_api_key_checkbox = QCheckBox("显示 API Key", api_group)
+
+        model_label = QLabel("模型名", api_group)
+        model_input = QLineEdit(api_group)
+        model_input.setPlaceholderText("例如：Qwen/Qwen2.5-7B-Instruct")
+        model_input.setText(self.assistant_model)
+
+        api_url_label = QLabel("接口地址", api_group)
+        api_url_input = QLineEdit(api_group)
+        api_url_input.setPlaceholderText("例如：https://api.siliconflow.cn/v1/chat/completions")
+        api_url_input.setText(self.assistant_api_url)
+
+        def on_toggle_api_key(checked):
+            mode = QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+            api_key_input.setEchoMode(mode)
+
+        show_api_key_checkbox.toggled.connect(on_toggle_api_key)
+
+        api_layout.addWidget(api_key_label)
+        api_layout.addWidget(api_key_input)
+        api_layout.addWidget(show_api_key_checkbox)
+        api_layout.addWidget(model_label)
+        api_layout.addWidget(model_input)
+        api_layout.addWidget(api_url_label)
+        api_layout.addWidget(api_url_input)
+
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             Qt.Orientation.Horizontal,
@@ -449,10 +840,18 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(label)
         layout.addWidget(theme_combo)
+        layout.addWidget(api_group)
         layout.addWidget(button_box)
 
         if dialog.exec() == int(QDialog.DialogCode.Accepted):
             self._apply_window_theme(theme_combo.currentData())
+            self.assistant_api_key = api_key_input.text().strip()
+            self.assistant_model = model_input.text().strip() or "Qwen/Qwen2.5-7B-Instruct"
+            self.assistant_api_url = api_url_input.text().strip() or "https://api.siliconflow.cn/v1/chat/completions"
+            if self._save_assistant_settings():
+                self.statusBar().showMessage("首选项已保存", 2000)
+            else:
+                self.statusBar().showMessage("首选项保存失败（仅本次会话生效）", 3500)
 
     def _setup_toolbar(self):
         toolbar = QToolBar("顶部工具栏", self)
@@ -724,6 +1123,7 @@ class MainWindow(QMainWindow):
         top_panel_layout.addWidget(self.top_stack)
 
         bottom_panel = QGroupBox("下半区域", central)
+        self.middle_bottom_panel = bottom_panel
         bottom_panel_layout = QVBoxLayout(bottom_panel)
         self.bottom_stack = QStackedWidget(bottom_panel)
         self._init_middle_bottom_pages()
@@ -822,6 +1222,154 @@ class MainWindow(QMainWindow):
         self._active_step_index = self.timeline_widget.selected_index
         self._on_editor_cursor_position_changed()
         self._set_editor_dirty(False)
+        self._setup_assistant_ui()
+        self.middle_splitter.splitterMoved.connect(self._on_middle_splitter_moved)
+        QTimer.singleShot(0, self._update_assistant_fab_position)
+
+    def _setup_assistant_ui(self):
+        if self.middle_bottom_panel is None:
+            return
+        if self.assistant_fab is None:
+            self.assistant_fab = QPushButton("AI", self.middle_bottom_panel)
+            self.assistant_fab.setProperty("assistantFab", True)
+            self.assistant_fab.setFixedSize(52, 52)
+            self.assistant_fab.setToolTip("打开智能助手")
+            self.assistant_fab.clicked.connect(self._open_assistant_dialog)
+            self.assistant_fab.show()
+        self.assistant_fab.raise_()
+        self._update_assistant_fab_position()
+
+    def _on_middle_splitter_moved(self, *_args):
+        self._update_assistant_fab_position()
+
+    def _update_assistant_fab_position(self):
+        if self.middle_bottom_panel is None or self.assistant_fab is None:
+            return
+
+        margin = 14
+        x = max(margin, self.middle_bottom_panel.width() - self.assistant_fab.width() - margin)
+        y = max(margin, self.middle_bottom_panel.height() - self.assistant_fab.height() - margin)
+        self.assistant_fab.move(x, y)
+        self.assistant_fab.raise_()
+
+    def _open_assistant_dialog(self):
+        if self.assistant_dialog is None:
+            self.assistant_dialog = _AssistantChatDialog(
+                self._assistant_context,
+                self._assistant_recommend_blocks,
+                self._assistant_jump_to_block,
+                self._assistant_api_config,
+                self,
+            )
+        self.assistant_dialog.show()
+        self.assistant_dialog.raise_()
+        self.assistant_dialog.activateWindow()
+
+    def _assistant_context(self):
+        current_step = self.timeline_widget.step_name(self.timeline_widget.selected_index)
+        return {
+            "controller": self.current_controller,
+            "chip": self.current_chip,
+            "step": current_step,
+            "target_folder": self.current_target_folder,
+        }
+
+    def _assistant_recommend_blocks(self, question: str, context: dict, limit: int = 6):
+        query = str(question or "").strip().lower()
+        if not query:
+            return []
+
+        tokens = [token for token in re.findall(r"[\w\u4e00-\u9fff]+", query) if token]
+        step_name = str(context.get("step", "") or "")
+        candidates = []
+
+        for block in self.block_library_manager.blocks:
+            block_id = str(block.get("id", "")).strip()
+            if not block_id:
+                continue
+
+            steps = block.get("steps", [])
+            if isinstance(steps, list) and steps and step_name and step_name not in steps:
+                continue
+
+            name = str(block.get("name", ""))
+            library = str(block.get("library", ""))
+            language = str(block.get("language", ""))
+            code_template = str(block.get("code_template", ""))
+            haystack = " ".join([block_id, name, library, language, code_template]).lower()
+
+            score = 0
+            reasons = []
+            for token in tokens:
+                if token in haystack:
+                    score += 2
+                    reasons.append(f"命中关键词: {token}")
+                if token in block_id.lower() or token in name.lower():
+                    score += 3
+
+            if any(key in query for key in ["pid", "pi", "速度", "电流", "控制"]):
+                control_text = f"{name} {library} {block_id}".lower()
+                if any(key in control_text for key in ["pi", "pid", "控制", "speed", "current"]):
+                    score += 3
+                    reasons.append("控制算法语义相关")
+
+            if score <= 0:
+                continue
+
+            candidates.append(
+                {
+                    "id": block_id,
+                    "name": name or block_id,
+                    "library": library or "未分类",
+                    "language": language,
+                    "score": score,
+                    "reason": "；".join(dict.fromkeys(reasons)) if reasons else "语义相关",
+                }
+            )
+
+        candidates.sort(key=lambda item: (item.get("score", 0), item.get("name", "")), reverse=True)
+        return candidates[:limit]
+
+    def _assistant_jump_to_block(self, block_id: str):
+        block = self.block_library_manager.get_block(block_id)
+        if not block:
+            self.statusBar().showMessage(f"未找到程序块: {block_id}", 2500)
+            return
+
+        target_step = self.timeline_widget.step_name(self.timeline_widget.selected_index)
+        steps = block.get("steps", []) if isinstance(block.get("steps", []), list) else []
+        if steps:
+            first_step = str(steps[0]).strip()
+            if first_step in self.timeline_widget.step_names:
+                target_step = first_step
+
+        if target_step in self.timeline_widget.step_names:
+            step_index = self.timeline_widget.step_names.index(target_step)
+            self.timeline_widget.selected_index = step_index
+            self.timeline_widget.update()
+            self.on_dot_selected(step_index)
+
+        meta = self.bottom_page_meta.get(target_step)
+        if not meta:
+            self.statusBar().showMessage(f"当前步骤未找到程序块列表: {target_step}", 2500)
+            return
+
+        self._refresh_block_list_for_step(target_step)
+        block_list = meta.get("block_list")
+        if block_list is None:
+            return
+
+        for row in range(block_list.count()):
+            item = block_list.item(row)
+            if item is None:
+                continue
+            if str(item.data(Qt.ItemDataRole.UserRole) or "").strip() == block_id:
+                block_list.setCurrentItem(item)
+                block_list.scrollToItem(item)
+                self.statusBar().showMessage(f"已定位推荐程序块: {block_id}", 2500)
+                return
+
+        self.statusBar().showMessage(f"推荐程序块未出现在当前筛选中: {block_id}", 3000)
 
     def _init_middle_top_pages(self):
         self.top_page_meta = {}
@@ -1669,6 +2217,10 @@ class MainWindow(QMainWindow):
             self.current_edit_file = None
         self._active_step_index = index
         self.statusBar().showMessage(f"已选中步骤: {step_name}", 2000)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_assistant_fab_position()
 
     def closeEvent(self, event):
         if not self._prompt_save_if_dirty("退出"):
